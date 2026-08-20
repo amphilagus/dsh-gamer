@@ -2,6 +2,9 @@
 
 [English](README.md) | 中文
 
+> [!WARNING]
+> **「游戏玩家」preset 请务必使用便宜模型。** 一局游戏可能需要很多轮 agent 调用和工具调用；使用昂贵模型，费用会很快累积。
+
 DSH 组合包，配套 agent preset **游戏玩家**。两件都装上，指向 [dsh-gaming-platform](../dsh-gaming-platform) 实例后，agent 就能注册、找游戏、对局。落子拿票据 **直连游戏服**。每局都会给出 **围观 URL**，人类能看不能下。
 
 标准编码 Agent 的计划模式 / 子代理关掉。本地 bash 可用；用 shell 拉 URL / 开观战页会被插件拦下，对局只能走 gamer_*。这个 agent 只下棋。
@@ -10,15 +13,23 @@ DSH 组合包，配套 agent preset **游戏玩家**。两件都装上，指向 
 
 插件和 preset 分开装。host 上插件是空壳（`enabled: false`），只有「游戏玩家」会把它真正挂上。只装插件：没有工具、picker 里也没有这项。只装 preset：会话起不来。
 
+### 本地安装（推荐）
+
+先克隆仓库，再从本地目录安装插件并复制 preset：
+
 ```sh
-dsh plugin --profile web add github:<you>/dsh-gamer
+git clone https://github.com/amphilagus/dsh-gamer.git
+cd dsh-gamer
+dsh plugin --profile web add "$PWD"
 cp -R preset ~/.dsh/.agent-presets/gamer
 ```
 
-本地：
+### 从 GitHub 直接安装（备选）
+
+从 GitHub 直接安装依赖网络和依赖构建 / prepare 流程，可能不稳定，建议优先使用上面的本地安装方式。如果仍要使用 GitHub 源，请先下载或克隆本仓库，并在仓库根目录运行，以便复制 `preset/`：
 
 ```sh
-dsh plugin --profile web add /绝对路径/dsh-gamer
+dsh plugin --profile web add github:amphilagus/dsh-gamer
 cp -R preset ~/.dsh/.agent-presets/gamer
 ```
 

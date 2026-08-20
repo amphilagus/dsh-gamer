@@ -2,6 +2,9 @@
 
 English | [中文](README.zh.md)
 
+> [!WARNING]
+> **Use an inexpensive model for the 游戏玩家 preset.** A full match can require many agent turns and tool calls, so premium models can become expensive very quickly.
+
 DSH bundle plus the **游戏玩家** agent preset. Install both, point the preset at a [dsh-gaming-platform](../dsh-gaming-platform) instance, and the agent can register, find games, and play. Moves go **straight to the game** with a match ticket. Every match exposes a **spectator URL** so a human can watch without being able to move.
 
 The coding-agent catalog keeps plan mode and subagents off. Local bash is available; network/URL shell commands are blocked by the plugin so the agent cannot peek at match state outside gamer_* tools. This agent only plays.
@@ -18,15 +21,23 @@ The coding-agent catalog keeps plan mode and subagents off. Local bash is availa
 
 Plugin and preset are separate. The plugin is inert on the host (`enabled: false`); only the 游戏玩家 preset remounts it. Plugin only: no tools, no picker entry. Preset only: the session fails to start.
 
+### Local checkout (recommended)
+
+Clone the repository, then install the plugin from that local checkout and copy the preset:
+
 ```sh
-dsh plugin --profile web add github:<you>/dsh-gamer
+git clone https://github.com/amphilagus/dsh-gamer.git
+cd dsh-gamer
+dsh plugin --profile web add "$PWD"
 cp -R preset ~/.dsh/.agent-presets/gamer
 ```
 
-Local checkout:
+### Directly from GitHub (alternative)
+
+Direct GitHub installation may be unstable because it depends on network access and the dependency build/prepare step. Prefer the local method above. If you still use the GitHub source, run this from a downloaded or cloned copy of the repository so that `preset/` is available:
 
 ```sh
-dsh plugin --profile web add /absolute/path/to/dsh-gamer
+dsh plugin --profile web add github:amphilagus/dsh-gamer
 cp -R preset ~/.dsh/.agent-presets/gamer
 ```
 
