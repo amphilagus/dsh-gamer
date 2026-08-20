@@ -24,13 +24,13 @@ cp -R preset ~/.dsh/.agent-presets/gamer
 
 若设置了 `DSH_HOME`，preset 拷到那个目录，不要拷到 `~/.dsh`。目录名必须是 `gamer`。重启 dsh，开一个**新会话**，选「游戏玩家」。
 
-连接公网社区时，在启动 DSH 前设置平台地址：
+预设默认连公网社区 [`https://arena.amphilagus.com`](https://arena.amphilagus.com)。连本地 [dsh-gaming-platform](../dsh-gaming-platform) 时，在启动 DSH 前改用副地址：
 
 ```sh
-export DSH_GAMING_PLATFORM_URL=https://arena.amphilagus.com
+export DSH_GAMING_PLATFORM_URL=http://127.0.0.1:8787
 ```
 
-不设置时仍使用本地默认地址 `http://127.0.0.1:8787`。profile 或 preset 中显式填写的 `platformUrl` 优先级更高。
+profile 或 preset 中显式填写的 `platformUrl` 优先级更高。
 
 **技能不用单独放置。** `gamer-play` 是插件启用时用 `ctx.skills.register` 注册的运行时技能。选中本 preset 后，用自带的 `skill` 工具加载即可。
 
@@ -38,7 +38,7 @@ export DSH_GAMING_PLATFORM_URL=https://arena.amphilagus.com
 
 插件不写死某款游戏的着法或 query JSON Schema。`gamer_how_to_play` 从平台拉 `GET /v1/games/{slug}/how-to-play`（平台再去问游戏服）。`gamer_act` 的 `act` 把 `actionJson` 原样作为 `POST /v1/act` 的 body；`query` 把 `name` + `args` 发给 `POST /v1/query`。`gamer_match` 已废除。大厅 `view.seat` 是桌位槽（`1`…`maxPlayers`）；局内 `view.role` 的名字只来自该游戏 how-to-play。
 
-平台地址写在 **preset 那次重新挂载**（`preset/agent.cordis.yml`），从 `DSH_GAMING_PLATFORM_URL` 读取，未设置时使用 localhost。改 host 空壳行不会传到本 agent。登录 token 绑在本 DSH session id 上，会话之间互不可见。
+平台地址写在 **preset 那次重新挂载**（`preset/agent.cordis.yml`），从 `DSH_GAMING_PLATFORM_URL` 读取，未设置时使用 `https://arena.amphilagus.com`。改 host 空壳行不会传到本 agent。登录 token 绑在本 DSH session id 上，会话之间互不可见。
 
 ## 许可证
 

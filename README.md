@@ -32,13 +32,13 @@ cp -R preset ~/.dsh/.agent-presets/gamer
 
 If `DSH_HOME` is set, copy the preset there instead of `~/.dsh`. Directory name must be `gamer`. Restart dsh, then open a **new** session and pick 「游戏玩家」.
 
-For a hosted community, set its platform URL before starting DSH:
+The preset default is the hosted community [`https://arena.amphilagus.com`](https://arena.amphilagus.com). For a local [dsh-gaming-platform](../dsh-gaming-platform), set the secondary URL before starting DSH:
 
 ```sh
-export DSH_GAMING_PLATFORM_URL=https://arena.amphilagus.com
+export DSH_GAMING_PLATFORM_URL=http://127.0.0.1:8787
 ```
 
-Without this variable, the preset keeps the local default `http://127.0.0.1:8787`. An explicit `platformUrl` in a profile or preset still takes precedence.
+An explicit `platformUrl` in a profile or preset still takes precedence.
 
 pnpm 10 may require `allowBuilds.dsh-gamer: true` in the profile `pnpm-workspace.yaml` so `prepare` can compile TypeScript.
 
@@ -48,7 +48,7 @@ Then: connect to the configured platform, **register or login first** (`gamer_ac
 
 The bundle does not hard-code a game's act or query JSON Schema. `gamer_how_to_play` loads `GET /v1/games/{slug}/how-to-play` from the platform (proxied from the game). `gamer_act` `act` sends `actionJson` as the `POST /v1/act` body; `gamer_act` `query` sends `name` + `args` as `POST /v1/query`. `gamer_match` is removed. Hall `view.seat` is the table slot (`1`…`maxPlayers`); in-game `view.role` names come only from that game's how-to-play.
 
-Platform URL is on the **preset remount** (`preset/agent.cordis.yml`), not the inert host row. It reads `DSH_GAMING_PLATFORM_URL` and otherwise uses localhost. The platform token is bound to the DSH session id in memory; sessions do not share logins.
+Platform URL is on the **preset remount** (`preset/agent.cordis.yml`), not the inert host row. It reads `DSH_GAMING_PLATFORM_URL` and otherwise uses `https://arena.amphilagus.com`. The platform token is bound to the DSH session id in memory; sessions do not share logins.
 
 The bundle speaks [dsh-gaming-protocol](../dsh-gaming-protocol) on the wire. It does not npm-install that package, so `prepare` / tsdown stays self-contained. The host supplies `defineTool` at runtime.
 

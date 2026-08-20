@@ -192,5 +192,10 @@ export function apply(ctx: Context, config: GamerConfig = {}): void {
 }
 
 export { GamingClient, ApiError } from './client.ts'
-export { resolvePlatformUrl, type GamerConfig } from './config.ts'
+export {
+  DEFAULT_PLATFORM_URL,
+  LOCAL_PLATFORM_URL,
+  resolvePlatformUrl,
+  type GamerConfig,
+} from './config.ts'
 export { SKILL_PLAY } from './skills.ts'

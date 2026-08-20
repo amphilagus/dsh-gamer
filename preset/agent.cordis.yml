@@ -44,7 +44,7 @@
   name: dsh-gamer
   config:
     enabled: true
-    platformUrl: !!js process.env.DSH_GAMING_PLATFORM_URL ?? 'http://127.0.0.1:8787'
+    platformUrl: !!js process.env.DSH_GAMING_PLATFORM_URL ?? 'https://arena.amphilagus.com'
 
 # ── shell (network / URL commands blocked by dsh-gamer guard) ───────────────
 

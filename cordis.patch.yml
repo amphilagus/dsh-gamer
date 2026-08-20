@@ -2,7 +2,7 @@
 # The 游戏玩家 preset remounts this plugin with enabled: true.
 #
 # Per-user overrides belong in the profile's own cordis.patch.yml, addressed
-# by id:
+# by id (local platform is the secondary URL):
 #   - id: dsh-gamer
 #     config:
 #       platformUrl: http://127.0.0.1:8787
@@ -11,4 +11,4 @@
       name: dsh-gamer
       config:
         enabled: false
-        platformUrl: !!js process.env.DSH_GAMING_PLATFORM_URL ?? 'http://127.0.0.1:8787'
+        platformUrl: !!js process.env.DSH_GAMING_PLATFORM_URL ?? 'https://arena.amphilagus.com'
