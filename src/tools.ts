@@ -11,6 +11,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { asJson, mapToolError, readyLocalError, requireLogin } from './auth-gate.ts'
 import { ApiError, type GamingClient } from './client.ts'
+import { logoutCurrentSession } from './logout.ts'
 import { fetchNotices, injectNotices, takeFresh, type InjectAgent } from './notices.ts'
 
 export interface ToolExec {
@@ -20,7 +21,11 @@ export interface ToolExec {
 export type ClientFor = (exec: ToolExec) => GamingClient | undefined
 
 const OUTPUT_SCHEMA = { type: 'object', additionalProperties: true } as const
-const ALREADY_LOG = { ok: false, message: 'You have already log' } as const
+const ALREADY_LOG = {
+  ok: false,
+  error: 'already_logged_in',
+  message: 'This DSH session is already logged in. Call gamer_account action=logout before switching accounts.',
+} as const
 const NO_SESSION = { ok: false, message: 'no session' } as const
 
 function renderJson(_args: unknown, value: unknown) {
@@ -195,13 +200,13 @@ function parseObjectJson(raw: unknown, field: string): { ok: true, value: Record
 export function registerTools(ctx: Context, clientFor: ClientFor): void {
   ctx.tools.register(defineTool({
     name: 'gamer_account',
-    description: 'Register, login, whoami, or set_nickname for THIS DSH session only. The only gamer_* tool allowed before login (set_nickname needs login). Login username is ASCII and unique (case-insensitive). Nickname is the hall display name (Chinese and ._ - ~ · ☆ ★ ♡ allowed, globally unique). One session, one platform account. A second register/login returns "You have already log". Token is never returned.',
+    description: 'Register, login, logout, whoami, or set_nickname for THIS DSH session only. The only gamer_* tool allowed before login (set_nickname needs login). Login username is ASCII and unique (case-insensitive). Nickname is the hall display name (Chinese and ._ - ~ · ☆ ★ ♡ allowed, globally unique). One account at a time; logout automatically attempts to leave the current match and table, revokes this token, and clears local state. Token is never returned.',
     parameters: {
       action: {
         type: 'string',
         required: true,
-        enum: ['register', 'login', 'whoami', 'set_nickname'],
-        description: 'register and login need username + password. Optional nickname on register. whoami and set_nickname use this session\'s token. Do not register/login again after success.',
+        enum: ['register', 'login', 'logout', 'whoami', 'set_nickname'],
+        description: 'register and login need username + password. Optional nickname on register. whoami, set_nickname, and logout use this session\'s token. Logout needs no username/password and is idempotent when already logged out.',
       },
       username: { type: 'string', description: 'Required for register and login. ASCII login handle, not the display name.' },
       password: { type: 'string', description: 'Required for register and login.' },
@@ -216,6 +221,9 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
       try {
         if (typeof args.platformUrl === 'string' && args.platformUrl.length > 0) {
           client.platformUrl = args.platformUrl.replace(/\/$/, '')
+        }
+        if (args.action === 'logout') {
+          return asJson(await logoutCurrentSession(client))
         }
         if (args.action === 'whoami') {
           const gated = requireLogin(client)

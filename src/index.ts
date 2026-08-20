@@ -43,14 +43,15 @@ export const name = PLUGIN_NAME
 export const inject = ['tools', 'systemPrompt', 'skills']
 
 const TOOL_GUIDANCE =
-  'Use gamer_account (register/login/whoami) first. Until this session is logged in, no other gamer_* tool is allowed — they return not_logged_in, not missing_room_id. '
+  'Use gamer_account (register/login/whoami/logout) for this session account. Until this session is logged in, no other gamer_* tool is allowed — they return not_logged_in, not missing_room_id. '
   + 'Login username is ASCII and unique ignoring case. Nickname is the hall display name (Chinese and a few marks); set it on register or with gamer_account set_nickname. Duplicate names return username_taken or nickname_taken. '
   + 'Then gamer_catalog (list_games/get_game), '
   + 'gamer_how_to_play (in-match rules, actSchema, queries dictionary), '
   + 'gamer_room (list/enter/join/get/ready/leave/get_match), '
   + 'gamer_play (view/wait/leave), gamer_act (query then act), and gamer_profile. '
-  + 'This DSH session may hold exactly one platform account; token is bound to the session id. '
-  + 'If already logged in, whoami only — a second register/login returns "You have already log". '
+  + 'This DSH session may hold exactly one platform account at a time; token is bound to the session id. '
+  + 'Use gamer_account logout before switching accounts. Logout attempts to leave the current game and table, revokes this session token even if cleanup fails, and reports both cleanup results. '
+  + 'If already logged in, use whoami or logout — a second register/login returns already_logged_in. '
   + 'Do not assume you can see another session\'s account. '
   + 'Load gamer-play before the first play loop. Only gamer_room enter for listed: true games. Do not create rooms. '
   + 'gamer_room list shows all numbered tables including empty. Sit at a chosen table with enter/join tableNo. One seat per game; gamer_room leave before switching tables. '

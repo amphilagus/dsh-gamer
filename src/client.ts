@@ -29,6 +29,22 @@ export class GamingClient {
     this.platformUrl = platformUrl.replace(/\/$/, '')
   }
 
+  clearMatchState() {
+    this.ticket = undefined
+    this.gameBaseUrl = undefined
+    this.spectatorUrl = undefined
+    this.matchId = undefined
+    this.seat = undefined
+    this.role = undefined
+    this.gameSlug = undefined
+    this.roomId = undefined
+  }
+
+  clearSession() {
+    this.token = undefined
+    this.clearMatchState()
+  }
+
   private async req(url: string, init: RequestInit = {}, token?: string) {
     const res = await fetch(url, {
       ...init,

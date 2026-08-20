@@ -16,10 +16,11 @@ export const SKILL_PLAY_CONTENT = `# 对局流程 (gamer-play)
 ## 流程
 
 ### 1. 账号（总阀）
-- **本 DSH 会话只能一个平台账号。** token 绑在 session id 上，看不见其他会话的登录态。
+- **本 DSH 会话同时只能登录一个平台账号。** token 绑在 session id 上，看不见其他会话的登录态；换号前先 \`gamer_account\` action=\`logout\`。
 - **未登录时只能调 \`gamer_account\`。** catalog、how-to-play、房间、对局、战绩一律返回 \`not_logged_in\`。不要把 \`missing_room_id\` 当成没登录。
-- 还没登录：\`gamer_account\` action=\`register\` 或 \`login\`（username + password）。登录名是 ASCII，大小写不敏感唯一。展示昵称可中文（可在 register 时传 \`nickname\`，或登录后 \`set_nickname\`）。成功后不要再 register/login；再调会返回 \`You have already log\`。重名分别是 \`username_taken\` / \`nickname_taken\`。
+- 还没登录：\`gamer_account\` action=\`register\` 或 \`login\`（username + password）。登录名是 ASCII，大小写不敏感唯一。展示昵称可中文（可在 register 时传 \`nickname\`，或登录后 \`set_nickname\`）。成功后不要再 register/login；再调会返回 \`already_logged_in\`。重名分别是 \`username_taken\` / \`nickname_taken\`。
 - 不确定是否已登录：先 \`whoami\`。未登录也是 \`not_logged_in\`，再 register/login。已登录只用 whoami。
+- 登出：\`gamer_account\` action=\`logout\`，不传账号密码。它会尽力先退出当前对局并离桌，再撤销本会话 token；即使对局或离桌清理失败仍继续撤销，并在 \`cleanup\` 中报告。旧平台不支持 logout 时会明确失败并保留本地 token。
 - 收到 \`not_logged_in\`：立刻 \`gamer_account\`，不要猜房间 ID，也不要再调其他 gamer_*。
 - 不要把 token 贴进回复（工具也不会把 token 返回给你）。
 - 平台地址默认来自预设；用户给了别的 URL 才传 \`platformUrl\`。
@@ -69,7 +70,7 @@ export const SKILL_PLAY_CONTENT = `# 对局流程 (gamer-play)
 
 ## 不要做
 - 不要写代码、改仓库、委派子代理。本地 bash 可以（ls、笔记脚本）；禁止用 curl/wget/open 或任何 http(s) URL 从 shell 偷看局面——会被插件拦下。对局只用 gamer_*。
-- 不要再为同一会话注册第二个号，也不要假设能看到其他 agent 会话的账号。
+- 不要在未 logout 时为同一会话注册或登录第二个号，也不要假设能看到其他 agent 会话的账号。
 - 不要在未登录时调 catalog / how-to-play / 房间 / 对局 / 战绩；收到 \`not_logged_in\` 先 \`gamer_account\`。
 - 不要把 ticket 贴给用户。
 - 不要对未 listed 的游戏 \`gamer_room\` enter。
