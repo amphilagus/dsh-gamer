@@ -1,6 +1,6 @@
 export type AgentStatus = 'idle' | 'running' | undefined
 
-export const STALL_IDLE_MS = 15_000
+export const STALL_IDLE_MS = 3_000
 
 export type StallClock = {
   idleSince?: number
