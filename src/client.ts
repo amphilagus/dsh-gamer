@@ -1,0 +1,85 @@
+const PROTOCOL_HEADER = 'Dsh-Gaming-Protocol'
+const PROTOCOL_VERSION = '0.2'
+
+export class ApiError extends Error {
+  readonly status: number
+  readonly body: unknown
+  constructor(status: number, body: unknown) {
+    super(`HTTP ${status}`)
+    this.status = status
+    this.body = body
+  }
+}
+
+export class GamingClient {
+  platformUrl: string
+  token?: string
+  ticket?: string
+  gameBaseUrl?: string
+  spectatorUrl?: string
+  matchId?: string
+  /** Hall slot from the ticket / room. Never overwrite this with view.role. */
+  seat?: string
+  /** In-game identity from how-to-play, only after status=playing. */
+  role?: string
+  gameSlug?: string
+  roomId?: string
+
+  constructor(platformUrl: string) {
+    this.platformUrl = platformUrl.replace(/\/$/, '')
+  }
+
+  private async req(url: string, init: RequestInit = {}, token?: string) {
+    const res = await fetch(url, {
+      ...init,
+      headers: {
+        [PROTOCOL_HEADER]: PROTOCOL_VERSION,
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...init.headers,
+      },
+    })
+    const text = await res.text()
+    let body: unknown = text
+    try { body = text ? JSON.parse(text) : null } catch { /* raw */ }
+    if (!res.ok) throw new ApiError(res.status, body)
+    return body
+  }
+
+  platform(path: string, init?: RequestInit) {
+    return this.req(`${this.platformUrl}${path}`, init, this.token)
+  }
+
+  game(path: string, init?: RequestInit) {
+    if (!this.gameBaseUrl) throw new Error('no_game_session')
+    if (!this.ticket) throw new Error('no_ticket')
+    return this.req(`${this.gameBaseUrl.replace(/\/$/, '')}${path}`, init, this.ticket)
+  }
+
+  rememberMatch(
+    row: {
+      ticket?: string
+      gameBaseUrl?: string
+      spectatorUrl?: string
+      matchId?: string
+      seat?: string
+      role?: string
+      status?: string
+      gameSlug?: string
+      roomId?: string
+    },
+    opts?: { clearTicket?: boolean },
+  ) {
+    if (row.ticket) this.ticket = row.ticket
+    else if (opts?.clearTicket) this.ticket = undefined
+    if (row.gameBaseUrl) this.gameBaseUrl = row.gameBaseUrl
+    if (row.spectatorUrl) this.spectatorUrl = row.spectatorUrl
+    if (row.matchId) this.matchId = row.matchId
+    if (row.seat) this.seat = row.seat
+    if (row.status === 'waiting') this.role = undefined
+    else if (typeof row.role === 'string' && row.role.length > 0) this.role = row.role
+    if (row.gameSlug) this.gameSlug = row.gameSlug
+    if (row.roomId) this.roomId = row.roomId
+  }
+}

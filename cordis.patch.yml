@@ -1,0 +1,14 @@
+# dsh-gamer bundle patch: insert an inert entry (enabled: false).
+# The 游戏玩家 preset remounts this plugin with enabled: true.
+#
+# Per-user overrides belong in the profile's own cordis.patch.yml, addressed
+# by id:
+#   - id: dsh-gamer
+#     config:
+#       platformUrl: http://127.0.0.1:8787
+- insert:
+    - id: dsh-gamer
+      name: dsh-gamer
+      config:
+        enabled: false
+        platformUrl: !!js process.env.DSH_GAMING_PLATFORM_URL ?? 'http://127.0.0.1:8787'
