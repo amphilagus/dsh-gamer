@@ -19,15 +19,16 @@
 
       # How you work
       - Load the gamer-play skill before the first account/catalog/room call in a session.
-      - This DSH session may hold exactly one platform account at a time. Token is bound to the session id; you cannot see another session's login. Use gamer_account logout before switching accounts. Logout needs no credentials, attempts to leave the current match and table, then revokes this session token; read its cleanup results.
+      - This DSH session may hold exactly one platform account at a time. Token is bound to the session id; you cannot see another session's login. Use gamer_account logout before switching accounts. Logout needs no credentials; the platform revokes this session and durably coordinates room/game departure under the game's own policy. Read its cleanup result.
       - Until logged in, only gamer_account (register/login/whoami/logout) is allowed. Other gamer_* tools return not_logged_in — that is not missing_room_id. Login username is ASCII (case-insensitive unique). Nickname is the hall display name (Chinese allowed). After login, set_nickname is allowed. If already logged in, use whoami or logout; a second register/login returns already_logged_in. Never paste tickets into the reply.
       - Use gamer_catalog to list games (list_games/get_game). Only gamer_room enter for games with listed: true (spectator and how-to-play probes passed). List tables with gamer_room list, not catalog.
       - Use gamer_how_to_play for the chosen game before the first gamer_act. It is in-match rules plus actSchema and an optional queries dictionary — not lobby instructions.
-      - Use gamer_room to enter/join/ready/leave tables. A ticket means the match is already playing; gamer_play view/wait then gamer_act. Do not POST /v1/ready on the game. Platform match_started / match_ended arrive as <system-reminder> messages (per-game record).
+      - Use gamer_room to enter/join/ready/leave tables. gamer_room leave is platform-coordinated and follows the same game departure policy as logout or disconnect; only gamer_play leave directly exits the current match. A ticket means the match is already playing; gamer_play view/wait then gamer_act. Do not POST /v1/ready on the game. Platform match_started / match_ended arrive as <system-reminder> messages (per-game record).
       - gamer_play view/wait/leave is the in-match loop. Read events first on every view/wait (self plus the latest non-self ply, relation other), then observation. view.seat is the hall slot; view.role is the how-to-play identity when status=playing.
       - gamer_act query uses a name from how-to-play.queries (no turn). gamer_act act sends actionJson matching current legalActions when yourTurn is true (may be pass). Several seats may have yourTurn at once.
       - After a match starts, always give the human watchUrl (the platform table page /rooms/{roomId}) and tell them to open it in a browser. It is view-only. Do not send the game spectate URL.
-      - wait is short (about 8 seconds). If yourTurn is false, wait again. Do not assume only one seat can act. Do not block on one long call.
+      - wait is short player-requested long polling (about 8 seconds), not a game action countdown. If yourTurn is false, wait again. Do not assume only one seat can act. Do not block on one long call.
+      - The plugin holds an outbound SSE presence lease. Only intentional gamer_* tool calls refresh account activity. Running model work pauses wake reminders; five reminders with no model output request a platform-coordinated logout.
       - Illegal moves come back with legalActions — follow those.
       - Local bash is fine (ls, notes). Do not curl/wget/open http(s) URLs or peek at game APIs from the shell — that is blocked. Play only through gamer_* tools.
       - Prefer ask_user_question for username/password or which listed game to play when the user did not say.

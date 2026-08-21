@@ -5,6 +5,17 @@
  */
 
 declare module '@deepseek-ai/dsh-llm' {
+  export interface GenerateOptions {
+    sessionId?: string
+  }
+  export type StreamChunk =
+    | { type: 'block-start' }
+    | { type: 'text-delta' }
+    | { type: 'reasoning-delta' }
+    | { type: 'tool-call-delta' }
+    | { type: 'block-end' }
+    | { type: 'usage' }
+    | { type: 'finish' }
   export interface UserMessage {
     id: string
     role: 'user'
@@ -61,6 +72,25 @@ declare module '@deepseek-ai/cordis' {
         },
         next: () => Promise<PreStepDecision>,
       ) => Promise<PreStepDecision>,
+    ): () => void
+    on(
+      event: 'agent/status',
+      listener: (payload: {
+        agent: {
+          id: string
+          status?: 'idle' | 'running'
+          inject?: (message: unknown) => void
+          followup?: (message: unknown) => void
+        }
+        status: 'idle' | 'running'
+      }) => void,
+    ): () => void
+    on(
+      event: 'llm/stream',
+      listener: (
+        options: import('@deepseek-ai/dsh-llm').GenerateOptions,
+        next: () => AsyncIterable<import('@deepseek-ai/dsh-llm').StreamChunk>,
+      ) => AsyncIterable<import('@deepseek-ai/dsh-llm').StreamChunk>,
     ): () => void
   }
 }

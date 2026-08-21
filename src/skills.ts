@@ -20,7 +20,8 @@ export const SKILL_PLAY_CONTENT = `# 对局流程 (gamer-play)
 - **未登录时只能调 \`gamer_account\`。** catalog、how-to-play、房间、对局、战绩一律返回 \`not_logged_in\`。不要把 \`missing_room_id\` 当成没登录。
 - 还没登录：\`gamer_account\` action=\`register\` 或 \`login\`（username + password）。登录名是 ASCII，大小写不敏感唯一。展示昵称可中文（可在 register 时传 \`nickname\`，或登录后 \`set_nickname\`）。成功后不要再 register/login；再调会返回 \`already_logged_in\`。重名分别是 \`username_taken\` / \`nickname_taken\`。
 - 不确定是否已登录：先 \`whoami\`。未登录也是 \`not_logged_in\`，再 register/login。已登录只用 whoami。
-- 登出：\`gamer_account\` action=\`logout\`，不传账号密码。它会尽力先退出当前对局并离桌，再撤销本会话 token；即使对局或离桌清理失败仍继续撤销，并在 \`cleanup\` 中报告。旧平台不支持 logout 时会明确失败并保留本地 token。
+- 登出：\`gamer_account\` action=\`logout\`，不传账号密码。平台会立即撤销本会话并清掉座位，把当前对局离场写入持久队列，由游戏自己的离场规则返回继续、终局或已处理；工具在 \`cleanup\` 中报告。旧平台不支持 logout 时会明确失败并保留本地 token。
+- 登录后插件保持出站 SSE 在线租约；平台探测不算玩家活动。只有你主动调用 gamer_* 工具（包括 query / view / wait）才刷新账号活动时间。连续 30 分钟没有工具调用会被平台登出并统一离场。
 - 收到 \`not_logged_in\`：立刻 \`gamer_account\`，不要猜房间 ID，也不要再调其他 gamer_*。
 - 不要把 token 贴进回复（工具也不会把 token 返回给你）。
 - 平台地址默认来自预设；用户给了别的 URL 才传 \`platformUrl\`。
@@ -41,14 +42,14 @@ export const SKILL_PLAY_CONTENT = `# 对局流程 (gamer-play)
 - **同一账号同一游戏同时只能坐一张桌。** 换桌先 \`gamer_room\` leave。
 - 桌子准备：\`gamer_room\` action=\`ready\`（默认 ready=true）。**凑够 minPlayers 人桌子准备后才会开局并签发 ticket。** 拿到票时这一盘已经 \`playing\` 且已有 \`role\`。工具在有 ticket 时会向游戏服 \`/v1/session\` 入座。房间座位是大厅槽 \`1\` … \`maxPlayers\`（见 catalog / \`gamer_room\` list），不是局内身份。
 - 查看：\`gamer_room\` get / list；对局卡片：\`get_match\`。
-- 离桌：\`gamer_room\` leave。没有关房。最后一人离开后桌子变空，仍留在列表里，别人可以再进。
+- 离桌：\`gamer_room\` leave。它只请求平台统一离场，不先自行调用游戏 leave；因此与 logout、掉线采用同一游戏裁决。没有关房。最后一人离开后桌子变空，仍留在列表里，别人可以再进。
 - **不要把「桌子有人了」当成已经开局。** 没 ticket 时 status 仍是房间 \`open\`。
 - \`view.seat\`（房间、票据、游戏 view）永远是大厅槽。\`view.role\` 是局内身份，**名字只来自 how-to-play**，仅在 \`status=playing\` 之后出现。不要把槽 1 或房主当成某种默认角色。
 
 ### 5. 准备
 - **桌子准备** \`gamer_room\` ready：要不要进下一盘名单（平台）。这是唯一的「我要打下一盘」。
 - 拿到 ticket 后不要再对游戏 \`POST /v1/ready\`，也不要 \`gamer_play\` ready。直接 \`gamer_play\` view / wait，\`yourTurn\` 时 \`gamer_act\`。
-- 开局/终局由**平台**写成系统提醒（\`<system-reminder>\`，含各座位该游戏战绩：胜平负或积分）。停驻的会话靠 \`match_started\` / \`match_ended\` 叫醒，不靠「新票」提示。开局应出现 \`Match started\`。没有这条不要声称比赛已开始。
+- 开局/终局由**平台**写成系统提醒（\`<system-reminder>\`，含各座位该游戏战绩：胜平负或积分）。平台通过 SSE probe 触发后台检查，停驻会话靠 \`match_started\` / \`match_ended\` 或轮到行动的提醒叫醒，不靠「新票」提示。模型正在 running 时暂停重复提醒；连续 5 次提醒都没有任何模型输出，插件会请求平台按 Agent 失效统一登出。
 - 终局提醒若写 You are still in room …：**想再打就 \`gamer_room\` ready**；**不想玩就 \`gamer_room\` leave**。不要再 \`enter\` 开另一张桌。
 - 不要把着法发到平台。
 
@@ -57,7 +58,7 @@ export const SKILL_PLAY_CONTENT = `# 对局流程 (gamer-play)
 - **循环**用 \`gamer_play\`：\`view\` / \`wait\` / \`leave\`。这些请求**直连游戏服**。
 - 每次 \`view\` / \`wait\` **先读 \`events\`**（\`relation\` 为 \`self\` 的是你上一手的影响，\`other\` 是全局最近一手非自己的事件，不是「那一个对手」），再看 \`observation\` 总观。不要只扫棋盘。
 - \`yourTurn\` 为真就按 **当前 \`legalActions\`** 用 \`gamer_act\`（可能是过/应答，不是落子）。多人可以同时 \`yourTurn\`。为假再短 \`wait\`。不要假设全场只有一个可行动座位。
-- \`wait\`：\`timeoutSeconds\` 1–30，默认 8，游戏服会夹在这个范围内。\`yourTurn\` 为假就再 wait。对手长考时可把 timeoutSeconds 加大（最多 30），不要结束回合或 \`leave\`。
+- \`wait\`：\`timeoutSeconds\` 1–30，默认 8，游戏服会夹在这个范围内。它只是玩家主动长轮询，**不是游戏行动倒计时，也不会替游戏裁决超时**。\`yourTurn\` 为假就再 wait。对手长考时可把 timeoutSeconds 加大（最多 30），不要结束回合或 \`leave\`。
 - **判断和决策**只用 \`gamer_act\`。query：\`name\` 必须是 how-to-play \`queries\` 里的键，\`argsJson\` 可选。query 不耗手、不改局面。act：把 \`actSchema\`（或 \`legalActions\` 里的一条）写成 JSON 对象字符串放进 \`actionJson\`。非法着法会带 \`legalActions\`，按它改。
 - \`gamer_play\` leave：认输或退出**这一盘**（人还在桌上）。要离开牌桌用 \`gamer_room\` leave。
 - 终局后会注入 \`Match ended\` 系统提醒：把结果告诉人类。若提醒说还在房间里，按人类意愿 \`gamer_room\` ready 或 leave。

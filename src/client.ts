@@ -1,5 +1,5 @@
-const PROTOCOL_HEADER = 'Dsh-Gaming-Protocol'
-const PROTOCOL_VERSION = '0.2'
+export const PROTOCOL_VERSION = '0.3'
+export const PROTOCOL_HEADER = 'Dsh-Gaming-Protocol'
 
 export class ApiError extends Error {
   readonly status: number
@@ -13,7 +13,8 @@ export class ApiError extends Error {
 
 export class GamingClient {
   platformUrl: string
-  token?: string
+  private sessionToken?: string
+  onTokenChanged?: (token: string | undefined) => void
   ticket?: string
   gameBaseUrl?: string
   spectatorUrl?: string
@@ -27,6 +28,16 @@ export class GamingClient {
 
   constructor(platformUrl: string) {
     this.platformUrl = platformUrl.replace(/\/$/, '')
+  }
+
+  get token() {
+    return this.sessionToken
+  }
+
+  set token(value: string | undefined) {
+    if (value === this.sessionToken) return
+    this.sessionToken = value
+    this.onTokenChanged?.(value)
   }
 
   clearMatchState() {
@@ -64,7 +75,23 @@ export class GamingClient {
   }
 
   platform(path: string, init?: RequestInit) {
-    return this.req(`${this.platformUrl}${path}`, init, this.token)
+    return this.req(`${this.platformUrl}${path}`, init, this.token).catch((error) => {
+      if (error instanceof ApiError && error.status === 401) this.clearSession()
+      throw error
+    })
+  }
+
+  async reportActivity(): Promise<boolean> {
+    try {
+      await this.platform('/v1/presence/activity', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'gamer_tool' }),
+      })
+      return true
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) throw error
+      return false
+    }
   }
 
   game(path: string, init?: RequestInit) {

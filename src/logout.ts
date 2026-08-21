@@ -1,17 +1,8 @@
 import { ApiError, type GamingClient } from './client.ts'
 
-export type LogoutCleanupStatus = 'not_applicable' | 'left' | 'failed'
-
-export interface LogoutCleanupStep {
-  status: LogoutCleanupStatus
-  httpStatus?: number
-  error?: string
-  message?: string
-}
-
 export interface LogoutCleanup {
-  game: LogoutCleanupStep
-  room: LogoutCleanupStep
+  room: 'none' | 'left'
+  game: 'none' | 'queued' | 'completed'
 }
 
 type LogoutResult =
@@ -31,27 +22,6 @@ type LogoutResult =
       message: string
       cleanup: LogoutCleanup
     }
-
-function skipped(): LogoutCleanupStep {
-  return { status: 'not_applicable' }
-}
-
-function failed(error: unknown): LogoutCleanupStep {
-  if (error instanceof ApiError) {
-    const body = error.body as { error?: { code?: unknown; message?: unknown } } | undefined
-    return {
-      status: 'failed',
-      httpStatus: error.status,
-      error: typeof body?.error?.code === 'string' ? body.error.code : 'http_error',
-      message: typeof body?.error?.message === 'string' ? body.error.message : error.message,
-    }
-  }
-  return {
-    status: 'failed',
-    error: 'request_failed',
-    message: error instanceof Error ? error.message : String(error),
-  }
-}
 
 function logoutFailure(error: unknown, cleanup: LogoutCleanup): LogoutResult {
   if (error instanceof ApiError) {
@@ -77,7 +47,7 @@ function logoutFailure(error: unknown, cleanup: LogoutCleanup): LogoutResult {
 }
 
 export async function logoutCurrentSession(client: GamingClient): Promise<LogoutResult> {
-  const cleanup: LogoutCleanup = { game: skipped(), room: skipped() }
+  const cleanup: LogoutCleanup = { room: 'none', game: 'none' }
   if (!client.token) {
     client.clearSession()
     return {
@@ -89,34 +59,9 @@ export async function logoutCurrentSession(client: GamingClient): Promise<Logout
     }
   }
 
-  if (client.ticket && client.gameBaseUrl) {
-    try {
-      await client.game('/v1/leave', {
-        method: 'POST',
-        body: JSON.stringify({ reason: 'logout' }),
-      })
-      client.ticket = undefined
-      cleanup.game = { status: 'left' }
-    } catch (error) {
-      cleanup.game = failed(error)
-    }
-  }
-
-  if (client.roomId) {
-    try {
-      await client.platform(`/v1/rooms/${encodeURIComponent(client.roomId)}/leave`, {
-        method: 'POST',
-        body: '{}',
-      })
-      client.clearMatchState()
-      cleanup.room = { status: 'left' }
-    } catch (error) {
-      cleanup.room = failed(error)
-    }
-  }
-
+  let response: { cleanup?: LogoutCleanup }
   try {
-    await client.platform('/v1/auth/logout', { method: 'POST' })
+    response = await client.platform('/v1/auth/logout', { method: 'POST' }) as { cleanup?: LogoutCleanup }
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
       client.clearSession()
@@ -136,6 +81,6 @@ export async function logoutCurrentSession(client: GamingClient): Promise<Logout
     ok: true,
     loggedOut: true,
     serverSession: 'revoked',
-    cleanup,
+    cleanup: response.cleanup ?? cleanup,
   }
 }

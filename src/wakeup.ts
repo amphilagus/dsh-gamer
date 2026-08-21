@@ -1,10 +1,41 @@
 export type AgentStatus = 'idle' | 'running' | undefined
 
 export const STALL_IDLE_MS = 3_000
+export const STALL_REPEAT_MS = 3_000
+export const MAX_WAKE_FAILURES = 5
 
 export type StallClock = {
   idleSince?: number
   lastStallAt?: number
+}
+
+export type WakeFailureState = {
+  failures: number
+  pendingWithoutOutput: boolean
+}
+
+export function initialWakeFailureState(): WakeFailureState {
+  return { failures: 0, pendingWithoutOutput: false }
+}
+
+export function recordWakeAttempt(state: WakeFailureState): WakeFailureState {
+  return { ...state, pendingWithoutOutput: true }
+}
+
+export function recordModelOutput(_state: WakeFailureState): WakeFailureState {
+  return initialWakeFailureState()
+}
+
+export function settleUnansweredWake(state: WakeFailureState, status: AgentStatus): WakeFailureState {
+  if (status !== 'idle' || !state.pendingWithoutOutput) return state
+  return {
+    failures: Math.min(MAX_WAKE_FAILURES, state.failures + 1),
+    pendingWithoutOutput: false,
+  }
+}
+
+export function shouldRequestAgentLogout(state: WakeFailureState): boolean {
+  return state.failures >= MAX_WAKE_FAILURES
 }
 
 export function isNewTicket(prev: string | undefined, next: string | undefined): boolean {
@@ -64,6 +95,6 @@ export function shouldStall(clock: StallClock, now: number, alreadyWoke: boolean
   if (alreadyWoke) return false
   if (clock.idleSince === undefined) return false
   if (now - clock.idleSince < STALL_IDLE_MS) return false
-  if (clock.lastStallAt !== undefined && clock.lastStallAt >= clock.idleSince) return false
+  if (clock.lastStallAt !== undefined && now - clock.lastStallAt < STALL_REPEAT_MS) return false
   return true
 }

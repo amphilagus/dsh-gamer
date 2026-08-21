@@ -37,24 +37,22 @@ function activeClient() {
   return client
 }
 
-test('logout leaves the game and room before revoking and clearing the session', async () => {
+test('logout delegates unified departure to the platform and clears the session', async () => {
   const calls: Array<{ url: string; method: string }> = []
   await withFetch(async (input, init) => {
     calls.push({ url: String(input), method: init?.method ?? 'GET' })
-    return jsonResponse({ ok: true })
+    return jsonResponse({ ok: true, cleanup: { room: 'left', game: 'queued' } })
   }, async () => {
     const client = activeClient()
     const result = await logoutCurrentSession(client)
     assert.equal(result.ok, true)
     assert.equal(result.loggedOut, true)
     assert.deepEqual(result.cleanup, {
-      game: { status: 'left' },
-      room: { status: 'left' },
+      room: 'left',
+      game: 'queued',
     })
     assert.doesNotMatch(JSON.stringify(result), /player-token|match-ticket/)
     assert.deepEqual(calls, [
-      { url: 'https://game.example/v1/leave', method: 'POST' },
-      { url: 'https://platform.example/v1/rooms/room%2F1/leave', method: 'POST' },
       { url: 'https://platform.example/v1/auth/logout', method: 'POST' },
     ])
     assert.equal(client.platformUrl, 'https://platform.example')
@@ -72,22 +70,19 @@ test('logout leaves the game and room before revoking and clearing the session',
   })
 })
 
-test('cleanup failures are reported but do not prevent token revocation', async () => {
+test('platform cleanup result is forwarded without exposing local credentials', async () => {
   const calls: string[] = []
   await withFetch(async (input) => {
     const url = String(input)
     calls.push(url)
-    if (url.startsWith('https://game.example/')) return jsonResponse({ error: { code: 'game_down' } }, 503)
-    if (url.includes('/v1/rooms/')) return jsonResponse({ error: { code: 'room_down' } }, 503)
-    return jsonResponse({ ok: true })
+    return jsonResponse({ ok: true, cleanup: { room: 'none', game: 'completed' } })
   }, async () => {
     const client = activeClient()
     const result = await logoutCurrentSession(client)
     assert.equal(result.ok, true)
     assert.equal(result.loggedOut, true)
-    assert.equal(result.cleanup.game.status, 'failed')
-    assert.equal(result.cleanup.room.status, 'failed')
-    assert.equal(calls.at(-1), 'https://platform.example/v1/auth/logout')
+    assert.deepEqual(result.cleanup, { room: 'none', game: 'completed' })
+    assert.deepEqual(calls, ['https://platform.example/v1/auth/logout'])
     assert.equal(client.token, undefined)
     assert.equal(client.roomId, undefined)
   })

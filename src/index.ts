@@ -11,9 +11,11 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent'
+import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { GamingClient } from './client.ts'
+import { BackgroundProbeCoordinator } from './background.ts'
 import { resolvePlatformUrl, type GamerConfig } from './config.ts'
 import { registerNetworkShellGuard } from './guard.ts'
 import {
@@ -26,21 +28,13 @@ import {
   takeFresh,
   type InjectAgent,
 } from './notices.ts'
+import { PresenceConnection } from './presence.ts'
 import { SKILL_PLAY, SKILL_PLAY_CONTENT } from './skills.ts'
 import { registerTools, sessionIfTicket, type ToolExec } from './tools.ts'
-import {
-  advanceStallClock,
-  deliverWake,
-  isNewTicket,
-  isStartOrEnd,
-  routeWake,
-  shouldStall,
-  viewIsYourTurn,
-  type StallClock,
-} from './wakeup.ts'
+import { isNewTicket, isStartOrEnd, viewIsYourTurn } from './wakeup.ts'
 
 export const name = PLUGIN_NAME
-export const inject = ['tools', 'systemPrompt', 'skills']
+export const inject = ['llm', 'tools', 'systemPrompt', 'skills']
 
 const TOOL_GUIDANCE =
   'Use gamer_account (register/login/whoami/logout) for this session account. Until this session is logged in, no other gamer_* tool is allowed — they return not_logged_in, not missing_room_id. '
@@ -50,7 +44,7 @@ const TOOL_GUIDANCE =
   + 'gamer_room (list/enter/join/get/ready/leave/get_match), '
   + 'gamer_play (view/wait/leave), gamer_act (query then act), and gamer_profile. '
   + 'This DSH session may hold exactly one platform account at a time; token is bound to the session id. '
-  + 'Use gamer_account logout before switching accounts. Logout attempts to leave the current game and table, revokes this session token even if cleanup fails, and reports both cleanup results. '
+  + 'Use gamer_account logout before switching accounts. Logout asks the platform to revoke this session and apply its durable game/table departure policy; read the cleanup result. '
   + 'If already logged in, use whoami or logout — a second register/login returns already_logged_in. '
   + 'Do not assume you can see another session\'s account. '
   + 'Load gamer-play before the first play loop. Only gamer_room enter for listed: true games. Do not create rooms. '
@@ -61,10 +55,10 @@ const TOOL_GUIDANCE =
   + 'On every gamer_play view/wait, read events first (self last ply + latest non-self ply, relation other), then observation. '
   + 'If yourTurn is true, gamer_act using current legalActions (may be pass). Several seats may have yourTurn at once; if false, short wait. '
   + 'Platform match_started / match_ended arrive as <system-reminder> user messages (per-game record copy). '
-  + 'After match_ended you stay at the table: gamer_room ready to play again, gamer_room leave if done. '
+  + 'After match_ended you stay at the table: gamer_room ready to play again, gamer_room leave if done. Room leave and account logout are platform-coordinated departures; only gamer_play leave directly exits this match. '
   + 'Call gamer_how_to_play for the chosen slug before the first gamer_act; act uses actionJson matching actSchema; query uses a name from queries. '
   + 'gamer_play view/wait and gamer_act talk to the game with the match ticket, not the platform. '
-  + 'Always give the human watchUrl (the platform /rooms/{roomId} table page); it is view-only. Do not send the game spectate URL. wait timeoutSeconds is 1–30 (default 8); poll while yourTurn is false. '
+  + 'Always give the human watchUrl (the platform /rooms/{roomId} table page); it is view-only. Do not send the game spectate URL. wait timeoutSeconds is 1–30 (default 8) and only controls player-requested long polling; it is not a game action clock. Poll while yourTurn is false. '
   + 'Local bash is allowed; curl/wget/open and http(s) URLs in the shell are blocked — play only via gamer_*. '
   + 'Never paste the match ticket into the reply.'
 
@@ -77,7 +71,8 @@ export function apply(ctx: Context, config: GamerConfig = {}): void {
   const platformUrl = resolvePlatformUrl(config)
   const clients = new Map<string, GamingClient>()
   const agents = new Map<string, InjectAgent>()
-  const stallClocks = new Map<string, StallClock>()
+  const coordinators = new Map<string, BackgroundProbeCoordinator>()
+  const presenceConnections = new Map<string, PresenceConnection>()
 
   const rememberAgent = (agent: InjectAgent | undefined) => {
     if (!agent?.id) return
@@ -92,6 +87,52 @@ export function apply(ctx: Context, config: GamerConfig = {}): void {
     if (!client) {
       client = new GamingClient(platformUrl)
       clients.set(sessionId, client)
+      const coordinator = new BackgroundProbeCoordinator(
+        () => agents.get(sessionId),
+        async () => {
+          if (!client?.token || !client.roomId) {
+            return { freshKinds: [], wakeMessages: [], seatedLive: false, yourTurn: false }
+          }
+          const prevTicket = client.ticket
+          const prevMatchId = client.matchId
+          const row = await client.platform(`/v1/rooms/${encodeURIComponent(client.roomId)}`) as {
+            ticket?: string
+            matchId?: string
+          }
+          if (isNewTicket(prevTicket, row.ticket)) await sessionIfTicket(client, row, client.gameSlug)
+          const matchId = (typeof row.matchId === 'string' && row.matchId.length > 0)
+            ? row.matchId
+            : prevMatchId
+          if (matchId) client.matchId = matchId
+          const liveMatch = typeof row.matchId === 'string' && row.matchId.length > 0
+          const notices = matchId ? await fetchNotices(client) : []
+          const fresh = takeFresh(sessionId, notices)
+          const seatedLive = Boolean(client.ticket) && liveMatch
+          let yourTurn = false
+          if (seatedLive && client.gameBaseUrl) {
+            try { yourTurn = viewIsYourTurn(await client.game('/v1/view')) } catch { /* game unavailable */ }
+          }
+          return {
+            freshKinds: fresh.map((notice) => notice.kind ?? ''),
+            wakeMessages: fresh.filter((notice) => isStartOrEnd(notice.kind)).map(noticeMessage),
+            seatedLive,
+            yourTurn,
+            stallMessage: stallMessage(),
+          }
+        },
+        (message) => ctx.logger?.(name).warn(message),
+      )
+      const presence = new PresenceConnection(
+        client,
+        async () => coordinator.onProbe(),
+        (message) => ctx.logger?.(name).warn(message),
+      )
+      coordinators.set(sessionId, coordinator)
+      presenceConnections.set(sessionId, presence)
+      client.onTokenChanged = (token) => {
+        if (token) presence.start()
+        else presence.stop()
+      }
     }
     return client
   }
@@ -115,67 +156,31 @@ export function apply(ctx: Context, config: GamerConfig = {}): void {
     return mergeEnter(await next(), extras)
   })
 
-  ctx.effect(() => {
-    const timer = setInterval(() => {
-      void (async () => {
-        for (const [sessionId, agent] of agents) {
-          const client = clients.get(sessionId)
-          if (!client?.token || !client.roomId) continue
-          if (!agent.inject && !agent.followup) continue
-          try {
-            const prevTicket = client.ticket
-            const prevMatchId = client.matchId
-            const row = await client.platform(`/v1/rooms/${encodeURIComponent(client.roomId)}`) as {
-              ticket?: string
-              matchId?: string
-            }
-            const newTicket = isNewTicket(prevTicket, row.ticket)
-            if (newTicket) await sessionIfTicket(client, row, client.gameSlug)
-            const matchId = (typeof row.matchId === 'string' && row.matchId.length > 0)
-              ? row.matchId
-              : prevMatchId
-            if (matchId) client.matchId = matchId
-            const liveMatch = typeof row.matchId === 'string' && row.matchId.length > 0
-            const notices = matchId ? await fetchNotices(client) : []
-            const fresh = takeFresh(sessionId, notices)
-            const wakeMsgs = fresh.filter((notice) => isStartOrEnd(notice.kind)).map(noticeMessage)
-            const action = routeWake({
-              status: agent.status,
-              freshKinds: fresh.map((notice) => notice.kind ?? ''),
-            })
-            let alreadyWoke = false
-            if (action !== 'none') {
-              alreadyWoke = deliverWake(agent, wakeMsgs) === 'followup'
-            }
-            const seatedLive = Boolean(client.ticket) && liveMatch
-            let yourTurn = false
-            if (agent.status === 'idle' && seatedLive && client.gameBaseUrl) {
-              try {
-                yourTurn = viewIsYourTurn(await client.game('/v1/view'))
-              } catch {
-                yourTurn = false
-              }
-            }
-            const now = Date.now()
-            const clock = advanceStallClock(
-              stallClocks.get(sessionId) ?? {},
-              agent.status,
-              seatedLive && yourTurn,
-              now,
-            )
-            if (shouldStall(clock, now, alreadyWoke)) {
-              deliverWake(agent, [stallMessage()])
-              clock.lastStallAt = now
-            }
-            stallClocks.set(sessionId, clock)
-          } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : String(error)
-            ctx.logger?.(name).warn(`gamer wakeup failed: ${message}`)
-          }
+  ctx.on('agent/status', ({ agent, status }) => {
+    rememberAgent(agent)
+    coordinators.get(String(agent.id))?.noteAgentStatus(status)
+  })
+
+  ctx.on('llm/stream', (options: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk> => {
+    const source = next()
+    if (options.sessionId === undefined) return source
+    const sessionId = String(options.sessionId)
+    return (async function* () {
+      let sawOutput = false
+      for await (const chunk of source) {
+        if (!sawOutput && chunk.type !== 'usage' && chunk.type !== 'finish') {
+          sawOutput = true
+          coordinators.get(sessionId)?.noteModelOutput()
         }
-      })()
-    }, 2000)
-    return () => clearInterval(timer)
+        yield chunk
+      }
+    })()
+  })
+
+  ctx.effect(() => {
+    return () => {
+      for (const presence of presenceConnections.values()) presence.stop()
+    }
   })
 
   ctx.skills.register({

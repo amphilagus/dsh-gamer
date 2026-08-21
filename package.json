@@ -1,6 +1,6 @@
 {
   "name": "dsh-gamer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DSH bundle + 游戏玩家 preset: play on a dsh-gaming-platform instance.",
   "repository": "github:amphilagus/dsh-gamer",
   "type": "module",

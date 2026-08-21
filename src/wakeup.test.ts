@@ -2,10 +2,16 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   STALL_IDLE_MS,
+  STALL_REPEAT_MS,
   advanceStallClock,
   deliverWake,
   isNewTicket,
+  initialWakeFailureState,
+  recordModelOutput,
+  recordWakeAttempt,
   routeWake,
+  settleUnansweredWake,
+  shouldRequestAgentLogout,
   shouldStall,
   viewIsYourTurn,
 } from './wakeup.ts'
@@ -96,12 +102,28 @@ test('viewIsYourTurn requires playing and yourTurn', () => {
   assert.equal(viewIsYourTurn(null), false)
 })
 
-test('stall after idle slack, once per idle stretch', () => {
+test('stall repeats only after the reminder interval while idle', () => {
   const idleSince = 1_000
   const clock = { idleSince }
   assert.equal(shouldStall(clock, idleSince + STALL_IDLE_MS - 1, false), false)
   assert.equal(shouldStall(clock, idleSince + STALL_IDLE_MS, false), true)
   assert.equal(shouldStall(clock, idleSince + STALL_IDLE_MS, true), false)
   const nudged = { idleSince, lastStallAt: idleSince + STALL_IDLE_MS }
-  assert.equal(shouldStall(nudged, idleSince + STALL_IDLE_MS + 20_000, false), false)
+  assert.equal(shouldStall(nudged, idleSince + STALL_IDLE_MS + STALL_REPEAT_MS - 1, false), false)
+  assert.equal(shouldStall(nudged, idleSince + STALL_IDLE_MS + STALL_REPEAT_MS, false), true)
+})
+
+test('five unanswered wake attempts request logout, output resets the count', () => {
+  let state = initialWakeFailureState()
+  for (let i = 0; i < 4; i++) {
+    state = recordWakeAttempt(state)
+    assert.equal(settleUnansweredWake(state, 'running').failures, i)
+    state = settleUnansweredWake(state, 'idle')
+    assert.equal(shouldRequestAgentLogout(state), false)
+  }
+  state = recordWakeAttempt(state)
+  state = settleUnansweredWake(state, 'idle')
+  assert.equal(state.failures, 5)
+  assert.equal(shouldRequestAgentLogout(state), true)
+  assert.deepEqual(recordModelOutput(state), initialWakeFailureState())
 })

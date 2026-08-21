@@ -36,6 +36,17 @@ function fail(error: unknown) {
   return mapToolError(error)
 }
 
+async function requireActiveLogin(client: GamingClient) {
+  const gated = requireLogin(client)
+  if (gated) return gated
+  try {
+    await client.reportActivity()
+    return undefined
+  } catch (error) {
+    return fail(error)
+  }
+}
+
 function omitSpectatorUrl(value: unknown): unknown {
   if (!value || typeof value !== 'object') return value
   if (Array.isArray(value)) return value.map(omitSpectatorUrl)
@@ -200,7 +211,7 @@ function parseObjectJson(raw: unknown, field: string): { ok: true, value: Record
 export function registerTools(ctx: Context, clientFor: ClientFor): void {
   ctx.tools.register(defineTool({
     name: 'gamer_account',
-    description: 'Register, login, logout, whoami, or set_nickname for THIS DSH session only. The only gamer_* tool allowed before login (set_nickname needs login). Login username is ASCII and unique (case-insensitive). Nickname is the hall display name (Chinese and ._ - ~ · ☆ ★ ♡ allowed, globally unique). One account at a time; logout automatically attempts to leave the current match and table, revokes this token, and clears local state. Token is never returned.',
+    description: 'Register, login, logout, whoami, or set_nickname for THIS DSH session only. The only gamer_* tool allowed before login (set_nickname needs login). Login username is ASCII and unique (case-insensitive). Nickname is the hall display name (Chinese and ._ - ~ · ☆ ★ ♡ allowed, globally unique). One account at a time; logout asks the platform to revoke this session and durably coordinate its room/game departure, then clears local state. Token is never returned.',
     parameters: {
       action: {
         type: 'string',
@@ -223,15 +234,16 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
           client.platformUrl = args.platformUrl.replace(/\/$/, '')
         }
         if (args.action === 'logout') {
+          if (client.token) await client.reportActivity().catch(() => false)
           return asJson(await logoutCurrentSession(client))
         }
         if (args.action === 'whoami') {
-          const gated = requireLogin(client)
+          const gated = await requireActiveLogin(client)
           if (gated) return gated
           return publicAccount(await client.platform('/v1/me') as { playerId?: string; username?: string; nickname?: string })
         }
         if (args.action === 'set_nickname') {
-          const gated = requireLogin(client)
+          const gated = await requireActiveLogin(client)
           if (gated) return gated
           if (typeof args.nickname !== 'string' || args.nickname.length === 0) {
             return asJson({ ok: false, error: 'missing_nickname', message: 'set_nickname requires nickname.' })
@@ -241,7 +253,11 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
             body: JSON.stringify({ nickname: args.nickname }),
           }) as { playerId?: string; username?: string; nickname?: string })
         }
-        if (client.token) return asJson(ALREADY_LOG)
+        if (client.token) {
+          const gated = await requireActiveLogin(client)
+          if (gated) return gated
+          return asJson(ALREADY_LOG)
+        }
         const session = await client.platform(
           args.action === 'register' ? '/v1/auth/register' : '/v1/auth/login',
           {
@@ -280,7 +296,7 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
     async execute(args, exec) {
       const client = clientFor(exec)
       if (!client) return asJson(NO_SESSION)
-      const gated = requireLogin(client)
+      const gated = await requireActiveLogin(client)
       if (gated) return gated
       try {
         if (args.action === 'list_games') {
@@ -309,7 +325,7 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
     async execute(args, exec) {
       const client = clientFor(exec)
       if (!client) return asJson(NO_SESSION)
-      const gated = requireLogin(client)
+      const gated = await requireActiveLogin(client)
       if (gated) return gated
       const slug = (typeof args.gameSlug === 'string' && args.gameSlug.length > 0)
         ? args.gameSlug
@@ -333,7 +349,7 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
 
   ctx.tools.register(defineTool({
     name: 'gamer_room',
-    description: 'Hall tables on the platform. Requires this session to be logged in. Each listed game has a fixed numbered pool (default 100). list returns every table including empty ones. enter (gameSlug, optional tableNo) sits at that table; omit tableNo to auto-sit (occupied unfull else lowest empty). join a table by roomId or by gameSlug+tableNo. get, ready (opens a match when enough seated players are table-ready, then issues a ticket), leave, get_match. Do not create rooms. One seat per game; leave before switching tables. There is no close. After match_ended you stay at the table until leave. Table ready is the only start gate — do not POST /v1/ready on the game.',
+    description: 'Hall tables on the platform. Requires this session to be logged in. Each listed game has a fixed numbered pool (default 100). list returns every table including empty ones. enter (gameSlug, optional tableNo) sits at that table; omit tableNo to auto-sit (occupied unfull else lowest empty). join a table by roomId or by gameSlug+tableNo. get, ready (opens a match when enough seated players are table-ready, then issues a ticket), leave, get_match. leave is a platform-coordinated departure and uses the game policy for the live match; it does not separately call gamer_play leave. Do not create rooms. One seat per game; leave before switching tables. There is no close.',
     parameters: {
       action: {
         type: 'string',
@@ -350,7 +366,6 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
         enum: ['true', 'false'],
         description: 'For action=ready on the table. Default true. false un-readies.',
       },
-      reason: { type: 'string', description: 'optional leave reason.' },
     },
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
     timeoutMs: 35_000,
@@ -358,7 +373,7 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
     async execute(args, exec) {
       const client = clientFor(exec)
       if (!client) return asJson(NO_SESSION)
-      const gated = requireLogin(client)
+      const gated = await requireActiveLogin(client)
       if (gated) return gated
       const out = (value: unknown) => withMatchExtras(value, client, exec.agent)
       try {
@@ -418,18 +433,9 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
           const local = readyLocalError(client, args)
           if (local) return local
           const roomId = requireRoomId(args, client)!
-          if (client.ticket && client.gameBaseUrl) {
-            try {
-              await client.game('/v1/leave', {
-                method: 'POST',
-                body: JSON.stringify({ reason: args.reason }),
-              })
-            } catch { /* match already ended or no live session */ }
-          }
           const row = await client.platform(`/v1/rooms/${roomId}/leave`, { method: 'POST', body: '{}' })
-          remember(client, row, args.gameSlug)
-          client.ticket = undefined
-          return await out(row)
+          client.clearMatchState()
+          return asJson(withSpectator(row, client))
         }
         if (args.action === 'get_match') {
           const id = args.matchId ?? client.matchId
@@ -446,7 +452,7 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
 
   ctx.tools.register(defineTool({
     name: 'gamer_play',
-    description: 'In-match loop with the match ticket: view, wait, leave this game (you stay at the table). Requires this session to be logged in. Not table enter/ready. Not judgment or moves — those are gamer_act. Read events on every view/wait (self last ply plus the latest non-self ply, relation other) before the board. A ticket means status is already playing with a role. watchUrl is the platform table page for the human (view-only). wait is short (1–30s, default 8). view.seat is the hall slot (1..maxPlayers); view.role is the in-game identity from how-to-play. yourTurn true means follow current legalActions (may be pass/skip); several seats may be true at once.',
+    description: 'In-match loop with the match ticket: view, wait, leave this game (you stay at the table). Requires this session to be logged in. Not table enter/ready. Not judgment or moves — those are gamer_act. Read events on every view/wait (self last ply plus the latest non-self ply, relation other) before the board. A ticket means status is already playing with a role. watchUrl is the platform table page for the human (view-only). wait is player-requested long polling (1–30s, default 8), not a game countdown. view.seat is the hall slot (1..maxPlayers); view.role is the in-game identity from how-to-play. yourTurn true means follow current legalActions (may be pass/skip); several seats may be true at once.',
     parameters: {
       action: {
         type: 'string',
@@ -463,7 +469,7 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
     async execute(args, exec) {
       const client = clientFor(exec)
       if (!client) return asJson(NO_SESSION)
-      const gated = requireLogin(client)
+      const gated = await requireActiveLogin(client)
       if (gated) return gated
       const out = (value: unknown) => withMatchExtras(value, client, exec.agent)
       try {
@@ -521,7 +527,7 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
     async execute(args, exec) {
       const client = clientFor(exec)
       if (!client) return asJson(NO_SESSION)
-      const gated = requireLogin(client)
+      const gated = await requireActiveLogin(client)
       if (gated) return gated
       const out = (value: unknown) => withMatchExtras(value, client, exec.agent)
       try {
@@ -575,7 +581,7 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
     async execute(args, exec) {
       const client = clientFor(exec)
       if (!client) return asJson(NO_SESSION)
-      const gated = requireLogin(client)
+      const gated = await requireActiveLogin(client)
       if (gated) return gated
       try {
         if (args.action === 'me') return publicAccount(await client.platform('/v1/me') as { playerId?: string; username?: string; nickname?: string })
