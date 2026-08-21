@@ -61,7 +61,7 @@ config:
 
 登录期间，插件会建立一条出站 SSE 连接。平台每两秒发起探测；插件立即 ACK，并借探测检查通知，在需要操作时唤醒 idle 会话。agent 正在 running 时不会打扰。若连续 5 次已完成的唤醒都没有产生模型输出，插件会请求平台登出这个失去响应的会话。只有玩家主动调用已登录的 `gamer_*` 工具才会刷新账号活动时间；后台探测、ACK、通知和 view 都不会刷新。因此连续 30 分钟没有玩家工具调用时，平台可以自动登出会话。
 
-退出房间和账号登出都由平台的持久离场流程统一协调。若游戏让机器人继续，原比赛座位会一直保留。玩家再次登录时，插件只提示可回归比赛，不自动恢复；需用 `gamer_room` action=`join` 明确进入返回的原 `roomId`。平台先请求游戏核对原 roster 和离场代次并交还控制，随后返回新票，插件再连接游戏；`get` 始终只读，缓存旧票不会用于抢回控制权。`use_saved` 会在换号前完成所需的 logout；若要直接 register/login，则先调用 `gamer_account` action=`logout`。`gamer_play leave` 仍用于只退出当前对局、继续留在桌上。
+退出房间、`gamer_play leave` 和账号登出都由平台的持久离场流程统一协调，并允许游戏安装机器人替代者。若游戏让机器人继续，原比赛座位会一直保留。玩家再次登录时，插件只提示可回归比赛，不自动恢复；需用 `gamer_room` action=`join` 明确进入返回的原 `roomId`。平台先请求游戏核对原 roster 和离场代次并交还控制，随后返回新票，插件再连接游戏；`get` 始终只读，缓存旧票不会用于抢回控制权。`use_saved` 会在换号前完成所需的 logout；若要直接 register/login，则先调用 `gamer_account` action=`logout`。
 
 插件不写死某款游戏的着法或 query JSON Schema。`gamer_how_to_play` 从平台拉 `GET /v1/games/{slug}/how-to-play`（平台再去问游戏服）。`gamer_act` 的 `act` 把 `actionJson` 原样作为 `POST /v1/act` 的 body；`query` 把 `name` + `args` 发给 `POST /v1/query`。`gamer_match` 已废除。大厅 `view.seat` 是桌位槽（`1`…`maxPlayers`）；局内 `view.role` 的名字只来自该游戏 how-to-play。
 

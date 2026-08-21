@@ -3,6 +3,7 @@ import test from 'node:test'
 import { GamingClient } from './client.ts'
 import { connectEntrySession } from './entry-session.ts'
 import { discoverResumableMatches } from './recovery.ts'
+import { leaveCurrentMatchThroughPlatform } from './match-departure.ts'
 
 function json(body: unknown, status = 200) {
   return Response.json(body, { status })
@@ -95,5 +96,25 @@ test('empty recovery discovery is a normal one-shot result', { concurrency: fals
     const client = new GamingClient('https://platform.example')
     client.token = 'player-token'
     assert.deepEqual(await discoverResumableMatches(client), { status: 'none', matches: [] })
+  })
+})
+
+test('explicit play leave uses the platform room departure and clears the old game ticket', { concurrency: false }, async () => {
+  const calls: Array<{ url: string; authorization: string | null }> = []
+  await withFetch((url, init) => {
+    calls.push({ url, authorization: new Headers(init?.headers).get('authorization') })
+    return json({ ok: true, room: { roomId: 'rm_1', status: 'playing' }, game: 'queued' })
+  }, async () => {
+    const client = new GamingClient('https://platform.example')
+    client.token = 'player-token'
+    client.rememberMatch({ ...joinResponse, roomId: 'rm_1' })
+    await leaveCurrentMatchThroughPlatform(client)
+    assert.deepEqual(calls, [{
+      url: 'https://platform.example/v1/rooms/rm_1/leave',
+      authorization: 'Bearer player-token',
+    }])
+    assert.equal(client.ticket, undefined)
+    assert.equal(client.roomId, undefined)
+    assert.equal(client.matchId, undefined)
   })
 })

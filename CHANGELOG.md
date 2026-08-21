@@ -7,6 +7,7 @@
 - Abort platform/account switches when old-platform logout fails, and replace the whole client so tokens and match state cannot cross origins.
 - Remove `DSH_GAMING_PLATFORM_URL`, scalar `platformUrl`, and model-supplied arbitrary URL overrides.
 - Report recoverable original tables after login without taking control; explicit table entry lets the platform coordinate game handoff, then the plugin connects with the returned generation ticket. All model-facing output now omits tickets and credentials recursively.
+- Route `gamer_play leave` through the same platform room-departure path as `gamer_room leave`, so games can install a recoverable replacement instead of receiving an uncoordinated direct leave.
 
 ## 0.2.0
 

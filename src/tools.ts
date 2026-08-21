@@ -12,6 +12,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { asJson, mapToolError, readyLocalError, requireLogin } from './auth-gate.ts'
 import { ApiError, type GamingClient } from './client.ts'
 import { connectEntrySession } from './entry-session.ts'
+import { leaveCurrentMatchThroughPlatform } from './match-departure.ts'
 import { logoutCurrentSession } from './logout.ts'
 import { fetchNotices, injectNotices, takeFresh, type InjectAgent } from './notices.ts'
 import { SavedAccountError, type SavedAccountStore, savedAccountId } from './saved-accounts.ts'
@@ -681,16 +682,15 @@ export function registerTools(ctx: Context, services: GamerToolServices): void {
 
   ctx.tools.register(defineTool({
     name: 'gamer_play',
-    description: 'In-match loop with the match ticket: view, wait, leave this game (you stay at the table). Requires this session to be logged in. Not table enter/ready. Not judgment or moves — those are gamer_act. Read events on every view/wait (self last ply plus the latest non-self ply, relation other) before the board. A ticket means status is already playing with a role. watchUrl is the platform table page for the human (view-only). wait is player-requested long polling (1–30s, default 8), not a game countdown. view.seat is the hall slot (1..maxPlayers); view.role is the in-game identity from how-to-play. yourTurn true means follow current legalActions (may be pass/skip); several seats may be true at once.',
+    description: 'In-match loop with the match ticket: view, wait, or leave through the platform so a replacement can continue. Requires this session to be logged in. Not table enter/ready. Not judgment or moves — those are gamer_act. Read events on every view/wait (self last ply plus the latest non-self ply, relation other) before the board. A ticket means status is already playing with a role. watchUrl is the platform table page for the human (view-only). wait is player-requested long polling (1–30s, default 8), not a game countdown. view.seat is the hall slot (1..maxPlayers); view.role is the in-game identity from how-to-play. yourTurn true means follow current legalActions (may be pass/skip); several seats may be true at once.',
     parameters: {
       action: {
         type: 'string',
         required: true,
         enum: ['view', 'wait', 'leave'],
-        description: 'view/wait/leave hit the game. leave forfeits this match only. Ready is gamer_room on the table, not this tool.',
+        description: 'view/wait hit the game. leave exits the platform table, creates a durable departure, and lets the game install a replacement. Ready is gamer_room on the table, not this tool.',
       },
       timeoutSeconds: { type: 'integer', description: 'wait timeout, 1-30, default 8.' },
-      reason: { type: 'string', description: 'optional leave reason.' },
     },
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
     timeoutMs: 35_000,
@@ -717,10 +717,7 @@ export function registerTools(ctx: Context, services: GamerToolServices): void {
           return await out(view)
         }
         if (args.action === 'leave') {
-          return await out(await client.game('/v1/leave', {
-            method: 'POST',
-            body: JSON.stringify({ reason: args.reason }),
-          }))
+          return asJson(await leaveCurrentMatchThroughPlatform(client))
         }
         return asJson({ ok: false, error: 'unknown_action' })
       } catch (error) {
