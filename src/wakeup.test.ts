@@ -5,7 +5,6 @@ import {
   STALL_REPEAT_MS,
   advanceStallClock,
   deliverWake,
-  isNewTicket,
   initialWakeFailureState,
   recordModelOutput,
   recordWakeAttempt,
@@ -15,10 +14,6 @@ import {
   shouldStall,
   viewIsYourTurn,
 } from './wakeup.ts'
-
-test('idle new ticket without start/end does not wake', () => {
-  assert.equal(routeWake({ status: 'idle', freshKinds: [] }), 'none')
-})
 
 test('idle fresh match_started followup', () => {
   assert.equal(routeWake({ status: 'idle', freshKinds: ['match_started'] }), 'followup')
@@ -43,13 +38,6 @@ test('running start/end inject and do not followup', () => {
 test('running with no start/end does nothing', () => {
   assert.equal(routeWake({ status: 'running', freshKinds: [] }), 'none')
   assert.equal(routeWake({ status: 'running', freshKinds: ['other'] }), 'none')
-})
-
-test('isNewTicket is the ticket appearance or replacement', () => {
-  assert.equal(isNewTicket(undefined, 't1'), true)
-  assert.equal(isNewTicket('t1', 't1'), false)
-  assert.equal(isNewTicket('t1', 't2'), true)
-  assert.equal(isNewTicket('t1', undefined), false)
 })
 
 test('idle deliverWake followups once then injects the rest', () => {

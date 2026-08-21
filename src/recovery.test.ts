@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { GamingClient } from './client.ts'
-import { connectEntrySession } from './entry-session.ts'
+import { connectEntrySession, readRoomSnapshot, synchronizeLiveRoomSession } from './entry-session.ts'
 import { discoverResumableMatches } from './recovery.ts'
 import { leaveCurrentMatchThroughPlatform } from './match-departure.ts'
 
@@ -88,6 +88,109 @@ test('game session failure preserves the entry context and is explicitly retryab
     assert.equal(client.ticket, 'new-secret-ticket')
     assert.equal(client.roomId, 'rm_1')
     assert.doesNotMatch(JSON.stringify(result), /new-secret-ticket|echoed-ticket|"ticket"/)
+  })
+})
+
+test('background room synchronization reads nested matchId and connects a fresh player ticket', { concurrency: false }, async () => {
+  const calls: Array<{ url: string; authorization: string | null; body?: string }> = []
+  await withFetch((url, init) => {
+    calls.push({
+      url,
+      authorization: new Headers(init?.headers).get('authorization'),
+      body: typeof init?.body === 'string' ? init.body : undefined,
+    })
+    if (url === 'https://platform.example/v1/matches/mt_new') {
+      return json({
+        matchId: 'mt_new',
+        roomId: 'rm_1',
+        gameSlug: 'xuezhan',
+        status: 'playing',
+        seat: '1',
+        role: 'east',
+        ticket: 'fresh-ticket',
+        gameBaseUrl: 'https://game-new.example',
+      })
+    }
+    if (url === 'https://game-new.example/v1/session') {
+      return json({ matchId: 'mt_new', status: 'playing', seat: '1', role: 'east' })
+    }
+    return json({}, 404)
+  }, async () => {
+    const client = new GamingClient('https://platform.example')
+    client.token = 'player-token'
+    client.rememberMatch({
+      matchId: 'mt_old',
+      roomId: 'rm_1',
+      gameSlug: 'xuezhan',
+      ticket: 'old-ticket',
+      gameBaseUrl: 'https://game-old.example',
+    })
+    const room = { room: { roomId: 'rm_1', gameSlug: 'xuezhan', status: 'playing', matchId: 'mt_new' } }
+    assert.deepEqual(readRoomSnapshot(room), {
+      roomId: 'rm_1',
+      gameSlug: 'xuezhan',
+      matchId: 'mt_new',
+    })
+    assert.deepEqual(await synchronizeLiveRoomSession(client, room), {
+      liveMatchId: 'mt_new',
+      connected: true,
+    })
+    assert.equal(client.matchId, 'mt_new')
+    assert.equal(client.ticket, 'fresh-ticket')
+    assert.equal(client.gameBaseUrl, 'https://game-new.example')
+    assert.deepEqual(calls, [
+      {
+        url: 'https://platform.example/v1/matches/mt_new',
+        authorization: 'Bearer player-token',
+        body: undefined,
+      },
+      {
+        url: 'https://game-new.example/v1/session',
+        authorization: 'Bearer fresh-ticket',
+        body: JSON.stringify({ ticket: 'fresh-ticket' }),
+      },
+    ])
+  })
+})
+
+test('failed background game connection clears transport and retries on the next probe', { concurrency: false }, async () => {
+  let gameAttempts = 0
+  let matchReads = 0
+  await withFetch((url) => {
+    if (url === 'https://platform.example/v1/matches/mt_new') {
+      matchReads++
+      return json({
+        matchId: 'mt_new',
+        roomId: 'rm_1',
+        gameSlug: 'xuezhan',
+        ticket: 'fresh-ticket',
+        gameBaseUrl: 'https://game.example',
+      })
+    }
+    gameAttempts++
+    return gameAttempts === 1
+      ? json({ error: { code: 'offline' } }, 503)
+      : json({ matchId: 'mt_new', status: 'playing' })
+  }, async () => {
+    const client = new GamingClient('https://platform.example')
+    client.token = 'player-token'
+    client.roomId = 'rm_1'
+    const room = { room: { roomId: 'rm_1', gameSlug: 'xuezhan', matchId: 'mt_new' } }
+
+    assert.deepEqual(await synchronizeLiveRoomSession(client, room), {
+      liveMatchId: 'mt_new',
+      connected: false,
+    })
+    assert.equal(client.matchId, 'mt_new')
+    assert.equal(client.ticket, undefined)
+    assert.equal(client.gameBaseUrl, undefined)
+
+    assert.deepEqual(await synchronizeLiveRoomSession(client, room), {
+      liveMatchId: 'mt_new',
+      connected: true,
+    })
+    assert.equal(matchReads, 2)
+    assert.equal(gameAttempts, 2)
   })
 })
 

@@ -17,6 +17,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type { GamingClient } from './client.ts'
 import { BackgroundProbeCoordinator } from './background.ts'
 import { resolvePlatforms, type GamerConfig } from './config.ts'
+import { synchronizeLiveRoomSession } from './entry-session.ts'
 import { registerNetworkShellGuard } from './guard.ts'
 import {
   clearDeliveredNotices,
@@ -33,8 +34,8 @@ import { PresenceConnection } from './presence.ts'
 import { createSavedAccountStore } from './saved-accounts.ts'
 import { GamerSessionManager } from './session-manager.ts'
 import { SKILL_PLAY, SKILL_PLAY_CONTENT } from './skills.ts'
-import { registerTools, sessionIfTicket, type ToolExec } from './tools.ts'
-import { isNewTicket, isStartOrEnd, viewIsYourTurn } from './wakeup.ts'
+import { registerTools, type ToolExec } from './tools.ts'
+import { isStartOrEnd, viewIsYourTurn } from './wakeup.ts'
 
 export const name = PLUGIN_NAME
 export const inject = ['llm', 'tools', 'systemPrompt', 'skills', 'settings', 'credentials']
@@ -97,21 +98,14 @@ export function apply(ctx: Context, config: GamerConfig = {}): void {
           if (!client?.token || !client.roomId) {
             return { freshKinds: [], wakeMessages: [], seatedLive: false, yourTurn: false }
           }
-          const prevTicket = client.ticket
           const prevMatchId = client.matchId
-          const row = await client.platform(`/v1/rooms/${encodeURIComponent(client.roomId)}`) as {
-            ticket?: string
-            matchId?: string
-          }
-          if (isNewTicket(prevTicket, row.ticket)) await sessionIfTicket(client, row, client.gameSlug)
-          const matchId = (typeof row.matchId === 'string' && row.matchId.length > 0)
-            ? row.matchId
-            : prevMatchId
+          const row = await client.platform(`/v1/rooms/${encodeURIComponent(client.roomId)}`)
+          const synchronized = await synchronizeLiveRoomSession(client, row)
+          const matchId = synchronized.liveMatchId ?? prevMatchId
           if (matchId) client.matchId = matchId
-          const liveMatch = typeof row.matchId === 'string' && row.matchId.length > 0
           const notices = matchId ? await fetchNotices(client) : []
           const fresh = takeFresh(sessionId, notices)
-          const seatedLive = Boolean(client.ticket) && liveMatch
+          const seatedLive = synchronized.connected
           let yourTurn = false
           if (seatedLive && client.gameBaseUrl) {
             try { yourTurn = viewIsYourTurn(await client.game('/v1/view')) } catch { /* game unavailable */ }

@@ -38,10 +38,6 @@ export function shouldRequestAgentLogout(state: WakeFailureState): boolean {
   return state.failures >= MAX_WAKE_FAILURES
 }
 
-export function isNewTicket(prev: string | undefined, next: string | undefined): boolean {
-  return Boolean(next) && next !== prev
-}
-
 export function isStartOrEnd(kind: string | undefined): boolean {
   return kind === 'match_started' || kind === 'match_ended'
 }
