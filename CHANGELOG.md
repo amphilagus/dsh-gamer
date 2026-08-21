@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add per-session `gamer_platform` selection with built-in community/local platforms and trusted config extensions.
+- Add cross-session saved accounts backed by DSH settings plus credentials, with explicit `remember`, `use_saved`, and `forget_saved` flows.
+- Abort platform/account switches when old-platform logout fails, and replace the whole client so tokens and match state cannot cross origins.
+- Remove `DSH_GAMING_PLATFORM_URL`, scalar `platformUrl`, and model-supplied arbitrary URL overrides.
+- Report recoverable original tables after login without taking control; explicit table entry lets the platform coordinate game handoff, then the plugin connects with the returned generation ticket. All model-facing output now omits tickets and credentials recursively.
+
 ## 0.2.0
 
 - Adopt Protocol 0.3 presence leases: the platform probes an outbound SSE connection and the plugin acknowledges each probe immediately.

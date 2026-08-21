@@ -14,11 +14,12 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-system-prompt'
-import { GamingClient } from './client.ts'
+import type { GamingClient } from './client.ts'
 import { BackgroundProbeCoordinator } from './background.ts'
-import { resolvePlatformUrl, type GamerConfig } from './config.ts'
+import { resolvePlatforms, type GamerConfig } from './config.ts'
 import { registerNetworkShellGuard } from './guard.ts'
 import {
+  clearDeliveredNotices,
   fetchNotices,
   mergeEnter,
   noticeMessage,
@@ -29,23 +30,28 @@ import {
   type InjectAgent,
 } from './notices.ts'
 import { PresenceConnection } from './presence.ts'
+import { createSavedAccountStore } from './saved-accounts.ts'
+import { GamerSessionManager } from './session-manager.ts'
 import { SKILL_PLAY, SKILL_PLAY_CONTENT } from './skills.ts'
 import { registerTools, sessionIfTicket, type ToolExec } from './tools.ts'
 import { isNewTicket, isStartOrEnd, viewIsYourTurn } from './wakeup.ts'
 
 export const name = PLUGIN_NAME
-export const inject = ['llm', 'tools', 'systemPrompt', 'skills']
+export const inject = ['llm', 'tools', 'systemPrompt', 'skills', 'settings', 'credentials']
 
 const TOOL_GUIDANCE =
-  'Use gamer_account (register/login/whoami/logout) for this session account. Until this session is logged in, no other gamer_* tool is allowed — they return not_logged_in, not missing_room_id. '
+  'Every new DSH session starts without a platform. Use gamer_platform list/current/select; ask the human which configured id to use, and never invent a URL. Selecting another platform logs out first and aborts on logout failure. '
+  + 'Use gamer_account list_saved before selection when helpful. use_saved preflights the credential, selects its platform, and logs in; it never runs automatically. register/login require an already selected platform, and remember=true stores the password only after successful authentication. forget_saved removes only the stored credential, not an active login. '
+  + 'Until this session is logged in, catalog/how-to-play/room/play/act/profile are blocked. No selection returns platform_not_selected; a selected platform without a token returns not_logged_in. '
   + 'Login username is ASCII and unique ignoring case. Nickname is the hall display name (Chinese and a few marks); set it on register or with gamer_account set_nickname. Duplicate names return username_taken or nickname_taken. '
   + 'Then gamer_catalog (list_games/get_game), '
   + 'gamer_how_to_play (in-match rules, actSchema, queries dictionary), '
   + 'gamer_room (list/enter/join/get/ready/leave/get_match), '
   + 'gamer_play (view/wait/leave), gamer_act (query then act), and gamer_profile. '
-  + 'This DSH session may hold exactly one platform account at a time; token is bound to the session id. '
-  + 'Use gamer_account logout before switching accounts. Logout asks the platform to revoke this session and apply its durable game/table departure policy; read the cleanup result. '
+  + 'This DSH session may hold exactly one platform account at a time; token is bound to the session id. Saved accounts are shared through this DSH_HOME, but selections and active tokens are session-local. '
+  + 'Account/platform switching asks the old platform to revoke this session and apply its durable game/table departure policy; read failures and do not force a switch. '
   + 'If already logged in, use whoami or logout — a second register/login returns already_logged_in. '
+  + 'After login, recovery only reports original tables. To take control back, explicitly enter or join the listed roomId; room get is read-only. '
   + 'Do not assume you can see another session\'s account. '
   + 'Load gamer-play before the first play loop. Only gamer_room enter for listed: true games. Do not create rooms. '
   + 'gamer_room list shows all numbered tables including empty. Sit at a chosen table with enter/join tableNo. One seat per game; gamer_room leave before switching tables. '
@@ -68,8 +74,8 @@ export function apply(ctx: Context, config: GamerConfig = {}): void {
     return
   }
 
-  const platformUrl = resolvePlatformUrl(config)
-  const clients = new Map<string, GamingClient>()
+  const platforms = resolvePlatforms(config)
+  const accounts = createSavedAccountStore(ctx)
   const agents = new Map<string, InjectAgent>()
   const coordinators = new Map<string, BackgroundProbeCoordinator>()
   const presenceConnections = new Map<string, PresenceConnection>()
@@ -79,17 +85,15 @@ export function apply(ctx: Context, config: GamerConfig = {}): void {
     agents.set(String(agent.id), agent)
   }
 
-  const clientFor = (exec: ToolExec): GamingClient | undefined => {
-    const sessionId = exec.agent?.id
-    if (!sessionId) return undefined
-    rememberAgent(exec.agent)
-    let client = clients.get(sessionId)
-    if (!client) {
-      client = new GamingClient(platformUrl)
-      clients.set(sessionId, client)
-      const coordinator = new BackgroundProbeCoordinator(
+  let sessions: GamerSessionManager
+
+  const ensureCoordinator = (sessionId: string) => {
+    let coordinator = coordinators.get(sessionId)
+    if (!coordinator) {
+      coordinator = new BackgroundProbeCoordinator(
         () => agents.get(sessionId),
         async () => {
+          const client = sessions.ensure(sessionId).client
           if (!client?.token || !client.roomId) {
             return { freshKinds: [], wakeMessages: [], seatedLive: false, yourTurn: false }
           }
@@ -122,29 +126,47 @@ export function apply(ctx: Context, config: GamerConfig = {}): void {
         },
         (message) => ctx.logger?.(name).warn(message),
       )
-      const presence = new PresenceConnection(
-        client,
-        async () => coordinator.onProbe(),
-        (message) => ctx.logger?.(name).warn(message),
-      )
       coordinators.set(sessionId, coordinator)
-      presenceConnections.set(sessionId, presence)
-      client.onTokenChanged = (token) => {
-        if (token) presence.start()
-        else presence.stop()
-      }
     }
-    return client
+    return coordinator
   }
 
-  registerTools(ctx, clientFor)
+  sessions = new GamerSessionManager(platforms, {
+    onClientChanged(sessionId, _previous, next) {
+      presenceConnections.get(sessionId)?.stop()
+      presenceConnections.delete(sessionId)
+      coordinators.delete(sessionId)
+      clearDeliveredNotices(sessionId)
+      if (!next) return
+      const coordinator = ensureCoordinator(sessionId)
+      presenceConnections.set(sessionId, new PresenceConnection(
+        next,
+        async () => coordinator.onProbe(),
+        (message) => ctx.logger?.(name).warn(message),
+      ))
+    },
+    onTokenChanged(sessionId, _client, token) {
+      const presence = presenceConnections.get(sessionId)
+      if (token) presence?.start()
+      else presence?.stop()
+    },
+  })
+
+  const stateFor = (exec: ToolExec) => {
+    const sessionId = exec.agent?.id
+    if (!sessionId) return undefined
+    rememberAgent(exec.agent)
+    return sessions.ensure(String(sessionId))
+  }
+
+  registerTools(ctx, { sessions, accounts })
 
   ctx.effect(() => registerNetworkShellGuard(ctx))
 
   ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
     rememberAgent(agent)
     let extras: Awaited<ReturnType<typeof pullNoticeMessages>> = []
-    const client = clientFor({ agent })
+    const client = stateFor({ agent })?.client
     if (client && !signal.aborted) {
       try {
         extras = await pullNoticeMessages(client, String(agent.id))
@@ -158,7 +180,7 @@ export function apply(ctx: Context, config: GamerConfig = {}): void {
 
   ctx.on('agent/status', ({ agent, status }) => {
     rememberAgent(agent)
-    coordinators.get(String(agent.id))?.noteAgentStatus(status)
+    ensureCoordinator(String(agent.id)).noteAgentStatus(status)
   })
 
   ctx.on('llm/stream', (options: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk> => {
@@ -199,9 +221,13 @@ export function apply(ctx: Context, config: GamerConfig = {}): void {
 
 export { GamingClient, ApiError } from './client.ts'
 export {
-  DEFAULT_PLATFORM_URL,
+  BUILTIN_PLATFORMS,
+  COMMUNITY_PLATFORM_URL,
   LOCAL_PLATFORM_URL,
-  resolvePlatformUrl,
+  resolvePlatforms,
   type GamerConfig,
+  type GamerPlatform,
+  type GamerPlatformConfig,
 } from './config.ts'
+export { savedAccountId, passwordCredentialRef, type SavedAccount } from './saved-accounts.ts'
 export { SKILL_PLAY } from './skills.ts'

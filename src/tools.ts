@@ -3,22 +3,33 @@
  * `required: true`), not a JSON Schema `{ type: 'object', properties }` wrapper.
  * `defineTool` is provided by the host at runtime.
  *
- * Each tool call must go through `clientFor(exec)` so token/ticket stay bound
- * to `exec.agent.id`. There is no process-wide client.
+ * Each tool call must go through the session manager so platform, token,
+ * account, and match state stay bound to `exec.agent.id`.
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { asJson, mapToolError, readyLocalError, requireLogin } from './auth-gate.ts'
 import { ApiError, type GamingClient } from './client.ts'
+import { connectEntrySession } from './entry-session.ts'
 import { logoutCurrentSession } from './logout.ts'
 import { fetchNotices, injectNotices, takeFresh, type InjectAgent } from './notices.ts'
+import { SavedAccountError, type SavedAccountStore, savedAccountId } from './saved-accounts.ts'
+import {
+  GamerSessionManager,
+  SessionManagerError,
+  type GamerSessionState,
+} from './session-manager.ts'
+import { discoverResumableMatches } from './recovery.ts'
 
 export interface ToolExec {
   agent?: InjectAgent
 }
 
-export type ClientFor = (exec: ToolExec) => GamingClient | undefined
+export interface GamerToolServices {
+  sessions: GamerSessionManager
+  accounts: SavedAccountStore
+}
 
 const OUTPUT_SCHEMA = { type: 'object', additionalProperties: true } as const
 const ALREADY_LOG = {
@@ -27,13 +38,41 @@ const ALREADY_LOG = {
   message: 'This DSH session is already logged in. Call gamer_account action=logout before switching accounts.',
 } as const
 const NO_SESSION = { ok: false, message: 'no session' } as const
+const PLATFORM_NOT_SELECTED = {
+  ok: false,
+  error: 'platform_not_selected',
+  message: 'Select a configured platform with gamer_platform action=select before logging in or using gamer tools.',
+} as const
+
+function stateFor(services: GamerToolServices, exec: ToolExec): GamerSessionState | undefined {
+  const sessionId = exec.agent?.id
+  return sessionId ? services.sessions.ensure(String(sessionId)) : undefined
+}
+
+function selectedClient(state: GamerSessionState | undefined) {
+  if (!state) return { error: asJson(NO_SESSION) }
+  if (!state.client || !state.platform) return { error: asJson(PLATFORM_NOT_SELECTED) }
+  return { state, client: state.client }
+}
 
 function renderJson(_args: unknown, value: unknown) {
   return [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }]
 }
 
 function fail(error: unknown) {
+  if (error instanceof SavedAccountError || error instanceof SessionManagerError) {
+    return asJson({ ok: false, error: error.code, message: error.message })
+  }
   return mapToolError(error)
+}
+
+function savedAccountFailure(error: unknown) {
+  if (error instanceof SavedAccountError) return fail(error)
+  return asJson({
+    ok: false,
+    error: 'saved_account_storage_error',
+    message: 'Saved account storage is unavailable. No credential details were returned.',
+  })
 }
 
 async function requireActiveLogin(client: GamingClient) {
@@ -168,25 +207,36 @@ function tableNoFrom(args: { tableNo?: unknown }): number | string | undefined {
 }
 
 export async function sessionIfTicket(client: GamingClient, row: unknown, fallbackSlug?: unknown) {
-  remember(client, row, fallbackSlug)
-  const ticket = (row && typeof row === 'object' && !Array.isArray(row))
-    ? (row as { ticket?: string }).ticket
-    : undefined
-  if (ticket && client.ticket && client.gameBaseUrl) {
-    const seated = await client.game('/v1/session', { method: 'POST', body: JSON.stringify({ ticket: client.ticket }) })
-    remember(client, seated, fallbackSlug)
-    return { room: row, session: seated }
-  }
-  return row
+  return connectEntrySession(client, row, fallbackSlug)
 }
 
-function publicAccount(body: { playerId?: string; username?: string; nickname?: string }) {
+function publicAccount(
+  body: { playerId?: string; username?: string; nickname?: string },
+  recovery?: unknown,
+  extras: Record<string, unknown> = {},
+) {
   return asJson({
     ok: true,
     playerId: body.playerId ?? null,
     username: body.username ?? null,
     nickname: body.nickname ?? body.username ?? null,
+    ...(recovery ? { recovery } : {}),
+    ...extras,
   })
+}
+
+async function recoveryAfterLogin(client: GamingClient): Promise<unknown> {
+  try {
+    return await discoverResumableMatches(client)
+  } catch (error) {
+    return {
+      status: 'discovery_failed',
+      retryable: true,
+      diagnostic: error instanceof ApiError
+        ? { status: error.status }
+        : (error instanceof Error ? error.message : String(error)),
+    }
+  }
 }
 
 function parseObjectJson(raw: unknown, field: string): { ok: true, value: Record<string, unknown> } | { ok: false, error: ReturnType<typeof asJson> } {
@@ -208,31 +258,163 @@ function parseObjectJson(raw: unknown, field: string): { ok: true, value: Record
   return { ok: true, value: payload as Record<string, unknown> }
 }
 
-export function registerTools(ctx: Context, clientFor: ClientFor): void {
+export function registerTools(ctx: Context, services: GamerToolServices): void {
   ctx.tools.register(defineTool({
-    name: 'gamer_account',
-    description: 'Register, login, logout, whoami, or set_nickname for THIS DSH session only. The only gamer_* tool allowed before login (set_nickname needs login). Login username is ASCII and unique (case-insensitive). Nickname is the hall display name (Chinese and ._ - ~ · ☆ ★ ♡ allowed, globally unique). One account at a time; logout asks the platform to revoke this session and durably coordinate its room/game departure, then clears local state. Token is never returned.',
+    name: 'gamer_platform',
+    description: 'List, inspect, or select one trusted configured DSH Gaming platform for THIS session. Every new session starts unselected. Selecting a different platform logs out the active account first; a failed logout aborts the switch without losing current state. Platforms cannot be added by the agent.',
     parameters: {
       action: {
         type: 'string',
         required: true,
-        enum: ['register', 'login', 'logout', 'whoami', 'set_nickname'],
-        description: 'register and login need username + password. Optional nickname on register. whoami, set_nickname, and logout use this session\'s token. Logout needs no username/password and is idempotent when already logged out.',
+        enum: ['list', 'current', 'select'],
+        description: 'list returns configured platforms; current returns this session selection; select requires platformId.',
       },
-      username: { type: 'string', description: 'Required for register and login. ASCII login handle, not the display name.' },
-      password: { type: 'string', description: 'Required for register and login.' },
-      nickname: { type: 'string', description: 'Display name. Optional on register (defaults to username). Required for set_nickname. Chinese and ._ - ~ · ☆ ★ ♡ allowed.' },
-      platformUrl: { type: 'string', description: 'Override platform base URL for this call only if the user named a different host.' },
+      platformId: { type: 'string', description: 'Configured platform id for select, e.g. community or local.' },
     },
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      const client = clientFor(exec)
-      if (!client) return asJson(NO_SESSION)
+      const state = stateFor(services, exec)
+      if (!state) return asJson(NO_SESSION)
       try {
-        if (typeof args.platformUrl === 'string' && args.platformUrl.length > 0) {
-          client.platformUrl = args.platformUrl.replace(/\/$/, '')
+        if (args.action === 'list') {
+          return asJson({
+            ok: true,
+            selectedPlatformId: state.platform?.id ?? null,
+            platforms: services.sessions.listPlatforms(),
+          })
         }
+        if (args.action === 'current') {
+          return asJson({
+            ok: true,
+            status: !state.platform ? 'platform_not_selected' : (state.client?.token ? 'logged_in' : 'not_logged_in'),
+            platform: state.platform ?? null,
+            loggedIn: Boolean(state.client?.token),
+            account: state.account ?? null,
+          })
+        }
+        if (args.action === 'select') {
+          if (typeof args.platformId !== 'string' || args.platformId.length === 0) {
+            return asJson({ ok: false, error: 'missing_platform_id', message: 'select requires platformId.' })
+          }
+          const transition = await services.sessions.selectPlatform(state.sessionId, args.platformId)
+          if (!transition.ok) {
+            return asJson({
+              ...(transition.logout as object),
+              switchAborted: true,
+              selectedPlatformId: transition.state.platform?.id ?? null,
+            })
+          }
+          return asJson({
+            ok: true,
+            changed: transition.changed,
+            status: transition.state.client?.token ? 'logged_in' : 'not_logged_in',
+            platform: transition.state.platform,
+            loggedIn: Boolean(transition.state.client?.token),
+          })
+        }
+        return asJson({ ok: false, error: 'unknown_action' })
+      } catch (error) {
+        return fail(error)
+      }
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'gamer_account',
+    description: 'Register, login, logout, inspect, or use saved accounts for THIS DSH session. Select a platform first for register/login. remember=true stores the password only after successful authentication. use_saved safely logs out any different current account, selects the saved platform, and logs in. Login/register also discovers bot-controlled matches. Tokens, passwords, and credential refs are never returned.',
+    parameters: {
+      action: {
+        type: 'string',
+        required: true,
+        enum: ['register', 'login', 'logout', 'whoami', 'set_nickname', 'list_saved', 'use_saved', 'forget_saved'],
+        description: 'register/login need username + password and an already selected platform. Set remember=true to save. list_saved and forget_saved do not require platform selection or login. use_saved takes accountId.',
+      },
+      username: { type: 'string', description: 'Required for register and login. ASCII login handle, not the display name.' },
+      password: { type: 'string', description: 'Required for register and login.' },
+      nickname: { type: 'string', description: 'Display name. Optional on register (defaults to username). Required for set_nickname. Chinese and ._ - ~ · ☆ ★ ♡ allowed.' },
+      remember: { type: 'boolean', description: 'For successful register/login only. true saves this platform username and password in DSH credentials. Default false.' },
+      accountId: { type: 'string', description: 'Stable saved id from list_saved, e.g. community/alice. Required for use_saved and forget_saved.' },
+    },
+    output: { schema: OUTPUT_SCHEMA, render: renderJson },
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      const state = stateFor(services, exec)
+      if (!state) return asJson(NO_SESSION)
+      try {
+        if (args.action === 'list_saved') {
+          try {
+            return asJson({ ok: true, accounts: await services.accounts.list() })
+          } catch (error) {
+            return savedAccountFailure(error)
+          }
+        }
+        if (args.action === 'forget_saved') {
+          if (typeof args.accountId !== 'string' || args.accountId.length === 0) {
+            return asJson({ ok: false, error: 'missing_account_id', message: 'forget_saved requires accountId.' })
+          }
+          try {
+            return asJson({ ok: true, accountId: args.accountId, forgotten: await services.accounts.forget(args.accountId) })
+          } catch (error) {
+            return savedAccountFailure(error)
+          }
+        }
+        if (args.action === 'use_saved') {
+          if (typeof args.accountId !== 'string' || args.accountId.length === 0) {
+            return asJson({ ok: false, error: 'missing_account_id', message: 'use_saved requires accountId.' })
+          }
+          let saved: Awaited<ReturnType<SavedAccountStore['resolve']>>
+          try {
+            saved = await services.accounts.resolve(args.accountId)
+          } catch (error) {
+            return savedAccountFailure(error)
+          }
+          services.sessions.getPlatform(saved.account.platformId)
+          const transition = await services.sessions.prepareLogin(
+            state.sessionId,
+            saved.account.platformId,
+            saved.account.accountId,
+          )
+          if (!transition.ok) {
+            return asJson({
+              ...(transition.logout as object),
+              switchAborted: true,
+              selectedPlatformId: transition.state.platform?.id ?? null,
+            })
+          }
+          const targetClient = transition.state.client!
+          if (transition.alreadyCurrent) {
+            const gated = await requireActiveLogin(targetClient)
+            if (gated) return gated
+            const me = await targetClient.platform('/v1/me') as { playerId?: string; username?: string; nickname?: string }
+            return publicAccount(me, undefined, {
+              accountId: saved.account.accountId,
+              platformId: saved.account.platformId,
+              saved: true,
+              alreadyCurrent: true,
+            })
+          }
+          const session = await targetClient.platform('/v1/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({ username: saved.account.username, password: saved.password }),
+          }) as { token: string; playerId?: string; username?: string; nickname?: string }
+          targetClient.clearMatchState()
+          targetClient.token = session.token
+          services.sessions.markAccount(transition.state, {
+            accountId: saved.account.accountId,
+            playerId: session.playerId,
+            username: session.username ?? saved.account.username,
+            nickname: session.nickname,
+          })
+          return publicAccount(session, await recoveryAfterLogin(targetClient), {
+            accountId: saved.account.accountId,
+            platformId: saved.account.platformId,
+            saved: true,
+          })
+        }
+        const selected = selectedClient(state)
+        if ('error' in selected) return selected.error
+        const client = selected.client
         if (args.action === 'logout') {
           if (client.token) await client.reportActivity().catch(() => false)
           return asJson(await logoutCurrentSession(client))
@@ -240,7 +422,15 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
         if (args.action === 'whoami') {
           const gated = await requireActiveLogin(client)
           if (gated) return gated
-          return publicAccount(await client.platform('/v1/me') as { playerId?: string; username?: string; nickname?: string })
+          const me = await client.platform('/v1/me') as { playerId?: string; username?: string; nickname?: string }
+          const accountId = savedAccountId(state.platform!.id, me.username ?? state.account?.username ?? '')
+          services.sessions.markAccount(state, {
+            accountId,
+            playerId: me.playerId,
+            username: me.username ?? state.account?.username ?? '',
+            nickname: me.nickname,
+          })
+          return publicAccount(me, undefined, { platformId: state.platform!.id, accountId })
         }
         if (args.action === 'set_nickname') {
           const gated = await requireActiveLogin(client)
@@ -248,15 +438,29 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
           if (typeof args.nickname !== 'string' || args.nickname.length === 0) {
             return asJson({ ok: false, error: 'missing_nickname', message: 'set_nickname requires nickname.' })
           }
-          return publicAccount(await client.platform('/v1/me', {
+          const me = await client.platform('/v1/me', {
             method: 'PATCH',
             body: JSON.stringify({ nickname: args.nickname }),
-          }) as { playerId?: string; username?: string; nickname?: string })
+          }) as { playerId?: string; username?: string; nickname?: string }
+          if (state.account) services.sessions.markAccount(state, { ...state.account, nickname: me.nickname })
+          return publicAccount(me, undefined, {
+            platformId: state.platform!.id,
+            accountId: state.account?.accountId ?? null,
+          })
         }
         if (client.token) {
           const gated = await requireActiveLogin(client)
           if (gated) return gated
           return asJson(ALREADY_LOG)
+        }
+        if (args.action !== 'register' && args.action !== 'login') {
+          return asJson({ ok: false, error: 'unknown_action' })
+        }
+        if (typeof args.username !== 'string' || args.username.length === 0) {
+          return asJson({ ok: false, error: 'missing_username', message: `${args.action} requires username.` })
+        }
+        if (typeof args.password !== 'string' || args.password.length === 0) {
+          return asJson({ ok: false, error: 'missing_password', message: `${args.action} requires password.` })
         }
         const session = await client.platform(
           args.action === 'register' ? '/v1/auth/register' : '/v1/auth/login',
@@ -271,8 +475,33 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
             }),
           },
         ) as { token: string; playerId?: string; username?: string; nickname?: string }
+        client.clearMatchState()
         client.token = session.token
-        return publicAccount(session)
+        const username = session.username ?? args.username
+        const accountId = savedAccountId(state.platform!.id, username)
+        services.sessions.markAccount(state, {
+          accountId,
+          playerId: session.playerId,
+          username,
+          nickname: session.nickname,
+        })
+        let saved = false
+        let saveError: { code: string; message: string } | undefined
+        if (args.remember === true) {
+          try {
+            await services.accounts.save(state.platform!.id, username, args.password)
+            saved = true
+          } catch {
+            saveError = { code: 'credential_save_failed', message: 'Login succeeded, but the saved credential could not be persisted.' }
+          }
+        }
+        return publicAccount(session, await recoveryAfterLogin(client), {
+          platformId: state.platform!.id,
+          accountId,
+          loggedIn: true,
+          saved,
+          ...(saveError ? { saveError } : {}),
+        })
       } catch (error) {
         return fail(error)
       }
@@ -294,8 +523,9 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
     isConcurrencySafe: () => true,
     async execute(args, exec) {
-      const client = clientFor(exec)
-      if (!client) return asJson(NO_SESSION)
+      const selected = selectedClient(stateFor(services, exec))
+      if ('error' in selected) return selected.error
+      const client = selected.client
       const gated = await requireActiveLogin(client)
       if (gated) return gated
       try {
@@ -323,8 +553,9 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
     isConcurrencySafe: () => true,
     async execute(args, exec) {
-      const client = clientFor(exec)
-      if (!client) return asJson(NO_SESSION)
+      const selected = selectedClient(stateFor(services, exec))
+      if ('error' in selected) return selected.error
+      const client = selected.client
       const gated = await requireActiveLogin(client)
       if (gated) return gated
       const slug = (typeof args.gameSlug === 'string' && args.gameSlug.length > 0)
@@ -349,18 +580,18 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
 
   ctx.tools.register(defineTool({
     name: 'gamer_room',
-    description: 'Hall tables on the platform. Requires this session to be logged in. Each listed game has a fixed numbered pool (default 100). list returns every table including empty ones. enter (gameSlug, optional tableNo) sits at that table; omit tableNo to auto-sit (occupied unfull else lowest empty). join a table by roomId or by gameSlug+tableNo. get, ready (opens a match when enough seated players are table-ready, then issues a ticket), leave, get_match. leave is a platform-coordinated departure and uses the game policy for the live match; it does not separately call gamer_play leave. Do not create rooms. One seat per game; leave before switching tables. There is no close.',
+    description: 'Hall tables and match recovery on the platform. Requires login. list returns the numbered table pool. enter/join sits at a table; entering an original bot-controlled table asks the game to return that seat before issuing a new ticket. ready starts when enough players are table-ready. leave uses the platform departure policy. Do not create rooms.',
     parameters: {
       action: {
         type: 'string',
         required: true,
         enum: ['list', 'enter', 'join', 'get', 'ready', 'leave', 'get_match'],
-        description: 'list/enter/join/get/ready/leave/get_match hit the platform. ready mints a ticket when enough players are table-ready. join does not start a match.',
+        description: 'list/enter/join/get/ready/leave/get_match hit the platform. join of the original room coordinates bot-seat recovery. get is read-only. ready mints a ticket when enough players are table-ready.',
       },
       gameSlug: { type: 'string', description: 'For enter, list filter, or join by tableNo. e.g. gomoku.' },
       tableNo: { type: 'string', description: 'Hall table number (1–100). For enter or join: sit at that numbered table. Omit to auto-sit on enter.' },
       roomId: { type: 'string', description: 'For join, get, ready, leave. Defaults to this session\'s table. join may use gameSlug+tableNo instead.' },
-      matchId: { type: 'string', description: 'For get_match; defaults to the current match.' },
+      matchId: { type: 'string', description: 'For get_match, defaults to the current match.' },
       ready: {
         type: 'string',
         enum: ['true', 'false'],
@@ -371,8 +602,9 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
     timeoutMs: 35_000,
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      const client = clientFor(exec)
-      if (!client) return asJson(NO_SESSION)
+      const selected = selectedClient(stateFor(services, exec))
+      if ('error' in selected) return selected.error
+      const client = selected.client
       const gated = await requireActiveLogin(client)
       if (gated) return gated
       const out = (value: unknown) => withMatchExtras(value, client, exec.agent)
@@ -414,9 +646,6 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
           const roomId = requireRoomId(args, client)!
           const row = await client.platform(`/v1/rooms/${roomId}`)
           remember(client, row, args.gameSlug)
-          if ((row as { ticket?: string }).ticket && (row as { gameBaseUrl?: string }).gameBaseUrl) {
-            await client.game('/v1/session', { method: 'POST', body: JSON.stringify({ ticket: client.ticket }) }).catch(() => undefined)
-          }
           return await out(row)
         }
         if (args.action === 'ready') {
@@ -467,8 +696,9 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
     timeoutMs: 35_000,
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      const client = clientFor(exec)
-      if (!client) return asJson(NO_SESSION)
+      const selected = selectedClient(stateFor(services, exec))
+      if ('error' in selected) return selected.error
+      const client = selected.client
       const gated = await requireActiveLogin(client)
       if (gated) return gated
       const out = (value: unknown) => withMatchExtras(value, client, exec.agent)
@@ -525,8 +755,9 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
     isConcurrencySafe: () => false,
     async execute(args, exec) {
-      const client = clientFor(exec)
-      if (!client) return asJson(NO_SESSION)
+      const selected = selectedClient(stateFor(services, exec))
+      if ('error' in selected) return selected.error
+      const client = selected.client
       const gated = await requireActiveLogin(client)
       if (gated) return gated
       const out = (value: unknown) => withMatchExtras(value, client, exec.agent)
@@ -579,8 +810,9 @@ export function registerTools(ctx: Context, clientFor: ClientFor): void {
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
     isConcurrencySafe: () => true,
     async execute(args, exec) {
-      const client = clientFor(exec)
-      if (!client) return asJson(NO_SESSION)
+      const selected = selectedClient(stateFor(services, exec))
+      if ('error' in selected) return selected.error
+      const client = selected.client
       const gated = await requireActiveLogin(client)
       if (gated) return gated
       try {

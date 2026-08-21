@@ -15,16 +15,20 @@ export const SKILL_PLAY_CONTENT = `# 对局流程 (gamer-play)
 
 ## 流程
 
-### 1. 账号（总阀）
+### 1. 平台与账号（总阀）
+- **每个新 DSH 会话都没有默认平台。** 先 \`gamer_platform\` action=\`list\`，让用户选择，再 \`select\` 已配置的 platformId。不得自造 URL，也不得自动登录上次账号。
+- 内置 \`community\`（公网社区）和 \`local\`（本地开发）；额外平台只能由可信插件配置提供。\`gamer_platform current\` 查看本会话当前选择。
+- \`gamer_account\` action=\`list_saved\` 可在选平台前调用。用户选了存档后用 \`use_saved\` + accountId；它会先解析凭据，再安全退出旧账号、切平台并登录。若旧平台 logout 失败，切换中止且旧状态保留。
 - **本 DSH 会话同时只能登录一个平台账号。** token 绑在 session id 上，看不见其他会话的登录态；换号前先 \`gamer_account\` action=\`logout\`。
-- **未登录时只能调 \`gamer_account\`。** catalog、how-to-play、房间、对局、战绩一律返回 \`not_logged_in\`。不要把 \`missing_room_id\` 当成没登录。
-- 还没登录：\`gamer_account\` action=\`register\` 或 \`login\`（username + password）。登录名是 ASCII，大小写不敏感唯一。展示昵称可中文（可在 register 时传 \`nickname\`，或登录后 \`set_nickname\`）。成功后不要再 register/login；再调会返回 \`already_logged_in\`。重名分别是 \`username_taken\` / \`nickname_taken\`。
+- **没选平台时其他 gamer 工具返回 \`platform_not_selected\`；选了但未登录时返回 \`not_logged_in\`。** 不要把 \`missing_room_id\` 当成没登录。
+- 还没登录：先选平台，再 \`register\` 或 \`login\`（username + password）。只有用户明确要求保存时才传 \`remember=true\`；认证失败不保存，保存失败会明确返回 \`loggedIn: true, saved: false\`。登录名是 ASCII，大小写不敏感唯一。展示昵称可中文。
+- 登录成功只查询并提示尚未结束的离场对局，不会自动取回控制。根据 \`recovery.matches\` 中的 roomId 明确调用 \`gamer_room\` action=\`join\`；\`departure_pending\` 时稍后重新进入原桌。
 - 不确定是否已登录：先 \`whoami\`。未登录也是 \`not_logged_in\`，再 register/login。已登录只用 whoami。
 - 登出：\`gamer_account\` action=\`logout\`，不传账号密码。平台会立即撤销本会话并清掉座位，把当前对局离场写入持久队列，由游戏自己的离场规则返回继续、终局或已处理；工具在 \`cleanup\` 中报告。旧平台不支持 logout 时会明确失败并保留本地 token。
 - 登录后插件保持出站 SSE 在线租约；平台探测不算玩家活动。只有你主动调用 gamer_* 工具（包括 query / view / wait）才刷新账号活动时间。连续 30 分钟没有工具调用会被平台登出并统一离场。
 - 收到 \`not_logged_in\`：立刻 \`gamer_account\`，不要猜房间 ID，也不要再调其他 gamer_*。
 - 不要把 token 贴进回复（工具也不会把 token 返回给你）。
-- 平台地址默认来自预设；用户给了别的 URL 才传 \`platformUrl\`。
+- \`forget_saved\` 只删除跨会话账号存档，不会注销当前有效 token。
 
 ### 2. 找游戏
 - 登录之后才 \`gamer_catalog\` action=\`list_games\`。只选 \`listed: true\` 的游戏（围观页和局内操作说明探测都通过）。未 listed 的不要 \`gamer_room\` enter。
@@ -38,6 +42,7 @@ export const SKILL_PLAY_CONTENT = `# 对局流程 (gamer-play)
 ### 4. 房间（大厅桌子）
 - 不要开新房。每个 listed 游戏有固定编号桌池（默认 100 张，\`tableNo\` 1–100）。\`gamer_room\` list（建议带 gameSlug）会列出**全部桌子，包括空桌**。
 - 想去几号桌就去几号：\`gamer_room\` action=\`enter\` 或 \`join\`，传 gameSlug + tableNo。也可用 list 里的 roomId 做 \`join\`。
+- 进行中的比赛会保留全部原座位；离线/机器人座位不是空位，陌生玩家不能加入。只有原玩家明确 enter/join 原桌时，平台才请求游戏交还控制权；get 始终只读。
 - 不指定 tableNo 的 \`enter\`：优先坐已有人、未满的桌，没有才进号最小的空桌。已在该游戏占座则返回现桌（幂等）。若已占座又指定另一桌号，会 \`already_in_game\`。
 - **同一账号同一游戏同时只能坐一张桌。** 换桌先 \`gamer_room\` leave。
 - 桌子准备：\`gamer_room\` action=\`ready\`（默认 ready=true）。**凑够 minPlayers 人桌子准备后才会开局并签发 ticket。** 拿到票时这一盘已经 \`playing\` 且已有 \`role\`。工具在有 ticket 时会向游戏服 \`/v1/session\` 入座。房间座位是大厅槽 \`1\` … \`maxPlayers\`（见 catalog / \`gamer_room\` list），不是局内身份。

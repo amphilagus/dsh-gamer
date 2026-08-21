@@ -1,14 +1,17 @@
 # dsh-gamer bundle patch: insert an inert entry (enabled: false).
 # The 游戏玩家 preset remounts this plugin with enabled: true.
 #
-# Per-user overrides belong in the profile's own cordis.patch.yml, addressed
-# by id (local platform is the secondary URL):
+# Trusted extra platforms belong in the profile's own cordis.patch.yml,
+# addressed by id. Built-ins are community and local:
 #   - id: dsh-gamer
 #     config:
-#       platformUrl: http://127.0.0.1:8787
+#       enabled: true
+#       platforms:
+#         - id: lan
+#           name: LAN server
+#           url: http://192.168.1.20:8787
 - insert:
     - id: dsh-gamer
       name: dsh-gamer
       config:
         enabled: false
-        platformUrl: !!js process.env.DSH_GAMING_PLATFORM_URL ?? 'https://arena.amphilagus.com'

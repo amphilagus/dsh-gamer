@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { ApiError } from './client.ts'
-import { mapToolError, readyLocalError, requireLogin } from './auth-gate.ts'
+import { asJson, mapToolError, readyLocalError, requireLogin } from './auth-gate.ts'
 
 test('no token is not_logged_in', () => {
   const out = requireLogin({})
@@ -36,7 +36,21 @@ test('ApiError 401 maps to not_logged_in', () => {
 })
 
 test('non-401 ApiError keeps status and body', () => {
-  const out = mapToolError(new ApiError(409, { error: { code: 'already_in_game' } }))
+  const out = mapToolError(new ApiError(409, {
+    error: { code: 'already_in_game' },
+    token: 'server-token',
+    nested: { password: 'echoed-password', credentialRef: 'INTERNAL_REF' },
+  }))
   assert.equal(out.status, 409)
   assert.equal(out.error?.error?.code, 'already_in_game')
+  assert.doesNotMatch(JSON.stringify(out), /server-token|echoed-password|INTERNAL_REF/)
+})
+
+test('all agent output recursively omits tickets, tokens, passwords, and credential references', () => {
+  const out = asJson({
+    ok: true,
+    ticket: 'match-ticket',
+    nested: { accessToken: 'player-token', password: 'secret', credentialRef: 'ref', safe: 1 },
+  })
+  assert.deepEqual(out, { ok: true, nested: { safe: 1 } })
 })

@@ -26,6 +26,10 @@ export interface InjectAgent {
 
 const delivered = new Map<string, Set<string>>()
 
+export function clearDeliveredNotices(sessionId: string): void {
+  delivered.delete(sessionKey(sessionId))
+}
+
 function sessionKey(id: string): string {
   return String(id)
 }

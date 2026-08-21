@@ -12,7 +12,7 @@ export class ApiError extends Error {
 }
 
 export class GamingClient {
-  platformUrl: string
+  readonly platformUrl: string
   private sessionToken?: string
   onTokenChanged?: (token: string | undefined) => void
   ticket?: string

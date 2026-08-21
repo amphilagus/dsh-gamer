@@ -39,6 +39,10 @@ declare module '@deepseek-ai/dsh-agent' {
 declare module '@deepseek-ai/cordis' {
   import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
   export interface Context {
+    inject: (
+      services: string[],
+      callback: (ctx: Context) => void,
+    ) => void
     tools: {
       register: (tool: unknown) => unknown
       guard: (
@@ -56,6 +60,8 @@ declare module '@deepseek-ai/cordis' {
     systemPrompt: {
       section: (section: { name: string; order: number; text: string }) => unknown
     }
+    settings: import('@deepseek-ai/dsh-settings').SettingsProvider
+    credentials: import('@deepseek-ai/dsh-credentials').CredentialProvider
     effect: (fn: () => (() => void) | void) => void
     logger?: (name: string) => { info: (msg: string) => void; warn: (msg: string) => void }
     on(
@@ -123,3 +129,50 @@ declare module '@deepseek-ai/dsh-tools' {
 
 declare module '@deepseek-ai/dsh-skill' {}
 declare module '@deepseek-ai/dsh-system-prompt' {}
+
+declare module '@deepseek-ai/dsh-credentials' {
+  export type CredentialRef = string & { readonly __credentialRef: unique symbol }
+  export interface CredentialProvider {
+    resolve(ref: CredentialRef): Promise<{ value: string; source: string } | undefined>
+    describe(ref: CredentialRef): Promise<{ configured: boolean; source?: string; writable: boolean }>
+    set(ref: CredentialRef, value: string): Promise<void>
+    unset(ref: CredentialRef): Promise<void>
+  }
+  export function credentialRef(value: string): CredentialRef
+}
+
+declare module '@deepseek-ai/dsh-settings' {
+  export type SettingsNamespace = string & { readonly __settingsNamespace: unique symbol }
+  export interface SettingsScope<T> {
+    get(): T
+    update(patch: object): Promise<void>
+    replace(section: object): Promise<void>
+  }
+  export interface SettingsProvider {
+    register<T>(
+      ns: SettingsNamespace,
+      schema: unknown,
+      options?: { applies?: 'live' | 'restart'; validate?: (value: T) => void },
+    ): SettingsScope<T>
+    mutate(
+      ns: SettingsNamespace,
+      ops: readonly Array<
+        | { op: 'set'; path: readonly string[]; value: unknown }
+        | { op: 'unset'; path: readonly string[] }
+      >,
+    ): Promise<void>
+  }
+  export function settingsNamespace(value: string): SettingsNamespace
+}
+
+declare module '@deepseek-ai/schemastery' {
+  class z<T = unknown> {
+    static object<T = unknown>(shape: Record<string, z<unknown>>): z<T>
+    static array<T = unknown>(item: z<T>): z<T[]>
+    static dict<T = unknown>(item: z<T>): z<Record<string, T>>
+    static string(): z<string>
+    required(): z<T>
+    default(value: T): z<T>
+  }
+  export default z
+}
