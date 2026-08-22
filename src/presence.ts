@@ -17,7 +17,7 @@ type SseEvent = { event: string; data: string }
 class PresenceEnded extends Error {}
 
 export function reconnectBackoffMs(failures: number): number {
-  return Math.min(30_000, 1000 * (2 ** Math.max(0, failures - 1)))
+  return Math.min(5_000, 1000 * Math.max(1, failures))
 }
 
 function parseFrame(frame: string): SseEvent | undefined {
@@ -116,8 +116,8 @@ export class PresenceConnection {
     let failures = 0
     while (!signal.aborted && this.client.token) {
       try {
-        const received = await this.connectOnce(signal)
-        failures = received > 0 ? 0 : failures + 1
+        const received = await this.connectOnce(signal, () => { failures = 0 })
+        if (received === 0) failures++
       } catch (error) {
         if (signal.aborted || !this.client.token) return
         failures++
@@ -128,7 +128,10 @@ export class PresenceConnection {
     }
   }
 
-  async connectOnce(signal: AbortSignal = new AbortController().signal): Promise<number> {
+  async connectOnce(
+    signal: AbortSignal = new AbortController().signal,
+    onAcknowledged: () => void = () => undefined,
+  ): Promise<number> {
     const token = this.client.token
     if (!token) return 0
     let res: Response
@@ -179,6 +182,7 @@ export class PresenceConnection {
             ...(state.logoutRequest ? { logoutRequest: state.logoutRequest } : {}),
           }),
         }) as { logoutAccepted?: boolean }
+        onAcknowledged()
         if (ack.logoutAccepted) {
           this.client.clearSession()
           throw new PresenceEnded()

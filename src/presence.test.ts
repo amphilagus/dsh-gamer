@@ -112,7 +112,78 @@ test('stream or ACK 401 clears local state while 5xx preserves it', async () => 
   })
 })
 
-test('activity is explicit and reconnect backoff caps at thirty seconds', async () => {
+test('only an accepted ACK reports a recovered presence connection', async () => {
+  let accepted = 0
+  let ackCalls = 0
+  await withFetch(async (input) => {
+    if (String(input).endsWith('/v1/presence/stream')) {
+      return streamResponse(probes.map((probe) => `event: probe\ndata: ${JSON.stringify(probe)}\n\n`).join(''))
+    }
+    ackCalls++
+    return ackCalls === 1
+      ? jsonResponse({ ok: true })
+      : jsonResponse({ error: { code: 'unavailable' } }, 503)
+  }, async () => {
+    const client = new GamingClient('https://platform.example')
+    client.token = 'player-token'
+    const connection = new PresenceConnection(client, async () => ({ agentStatus: 'idle', wakeFailures: 0 }))
+    await assert.rejects(
+      connection.connectOnce(undefined, () => { accepted++ }),
+      (error: unknown) => error instanceof ApiError && error.status === 503,
+    )
+    assert.equal(accepted, 1)
+    assert.equal(client.token, 'player-token')
+  })
+
+  accepted = 0
+  await withFetch(async (input) => {
+    if (String(input).endsWith('/v1/presence/stream')) {
+      return streamResponse(`event: probe\ndata: ${JSON.stringify(probes[0])}\n\n`)
+    }
+    return jsonResponse({ error: { code: 'unavailable' } }, 503)
+  }, async () => {
+    const client = new GamingClient('https://platform.example')
+    client.token = 'player-token'
+    const connection = new PresenceConnection(client, async () => ({ agentStatus: 'idle', wakeFailures: 0 }))
+    await assert.rejects(
+      connection.connectOnce(undefined, () => { accepted++ }),
+      (error: unknown) => error instanceof ApiError && error.status === 503,
+    )
+    assert.equal(accepted, 0)
+  })
+})
+
+test('independent ACK failures retry at one second after each recovered connection', async () => {
+  let failures = 4
+  let ackInConnection = 0
+  await withFetch(async (input) => {
+    if (String(input).endsWith('/v1/presence/stream')) {
+      ackInConnection = 0
+      return streamResponse(probes.map((probe) => `event: probe\ndata: ${JSON.stringify(probe)}\n\n`).join(''))
+    }
+    ackInConnection++
+    return ackInConnection === 1
+      ? jsonResponse({ ok: true })
+      : jsonResponse({ error: { code: 'unavailable' } }, 503)
+  }, async () => {
+    const client = new GamingClient('https://platform.example')
+    client.token = 'player-token'
+    const connection = new PresenceConnection(client, async () => ({ agentStatus: 'idle', wakeFailures: 0 }))
+    const retryDelays: number[] = []
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await connection.connectOnce(undefined, () => { failures = 0 })
+      } catch (error) {
+        assert.ok(error instanceof ApiError && error.status === 503)
+        failures++
+      }
+      retryDelays.push(reconnectBackoffMs(failures))
+    }
+    assert.deepEqual(retryDelays, [1_000, 1_000, 1_000])
+  })
+})
+
+test('activity is explicit and reconnect backoff is linear with a five-second cap', async () => {
   const calls: Array<{ url: string; body?: string }> = []
   await withFetch(async (input, init) => {
     calls.push({ url: String(input), body: init?.body ? String(init.body) : undefined })
@@ -126,7 +197,8 @@ test('activity is explicit and reconnect backoff caps at thirty seconds', async 
     url: 'https://platform.example/v1/presence/activity',
     body: JSON.stringify({ kind: 'gamer_tool' }),
   }])
-  assert.equal(reconnectBackoffMs(1), 1000)
-  assert.equal(reconnectBackoffMs(5), 16_000)
-  assert.equal(reconnectBackoffMs(20), 30_000)
+  assert.deepEqual(
+    [1, 2, 3, 4, 5, 6, 20].map(reconnectBackoffMs),
+    [1_000, 2_000, 3_000, 4_000, 5_000, 5_000, 5_000],
+  )
 })
