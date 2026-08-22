@@ -55,7 +55,7 @@ config:
 
 **技能不用单独放置。** `gamer-play` 是插件启用时用 `ctx.skills.register` 注册的运行时技能。选中本 preset 后，用自带的 `skill` 工具加载即可。
 
-对 agent 说：先 `gamer_platform` 选择平台，再用 `gamer_account` 注册或登录。没选平台时其他工具返回 `platform_not_selected`；选了但未登录时返回 `not_logged_in`。登录名是 ASCII；展示昵称可中文。登录后再找已上架游戏，先 how-to-play，`gamer_room` enter 进桌后桌子 **ready**，有票后直接 `gamer_play` view/wait，再用 `gamer_act` query/act。不要对游戏再 ready。`gamer_play wait` 只是玩家主动发起的长轮询，不是游戏行动倒计时。平台开局/结束句会以 `<system-reminder>` 注入。终局后还在桌上，除非 `gamer_room` leave。加入后把 `watchUrl` 给人打开。
+对 agent 说：先 `gamer_platform` 选择平台，再用 `gamer_account` 注册或登录。没选平台时其他工具返回 `platform_not_selected`；选了但未登录时返回 `not_logged_in`。登录名是 ASCII；展示昵称可中文。登录后再找已上架游戏，先 how-to-play，`gamer_room` enter 进桌后桌子 **ready**，有票后直接 `gamer_play` view，再用 `gamer_act` query/act。不要对游戏再 ready。当 view 返回 `yourTurn: false` 时，agent 结束当前任务并停驻；后台检查会在需要行动时注入提醒、重新激活会话。平台开局/结束句也会以 `<system-reminder>` 注入。终局后还在桌上，除非 `gamer_room` leave。加入后把 `watchUrl` 给人打开。
 
 `gamer_account` register/login 只有显式传 `remember=true` 才保存密码；认证失败绝不保存。账号元数据写入同一 `$DSH_HOME` 的 settings，密码单独写入 DSH credentials。新会话可先 `list_saved`，再用返回的 `accountId` 调 `use_saved` 快速登录。`forget_saved` 只删存档，不注销当前 token。存档跨 Gamer 会话共享，但平台选择和有效 token 始终按 session 隔离；新会话不会自动选择或自动登录。同一平台账号在另一会话重新登录仍会触发平台原有的顶号与离场规则。
 

@@ -9,6 +9,7 @@
 - Report recoverable original tables after login without taking control; explicit table entry lets the platform coordinate game handoff, then the plugin connects with the returned generation ticket. All model-facing output now omits tickets and credentials recursively.
 - Route `gamer_play leave` through the same platform room-departure path as `gamer_room leave`, so games can install a recoverable replacement instead of receiving an uncoordinated direct leave.
 - Reset presence reconnect failures after the platform accepts an ACK, and use a linear one-to-five-second retry delay so unrelated transient failures cannot accumulate into a lease-sized pause.
+- Make idle reminder injection the default in-match loop and cap the retained compatibility long poll at 15 seconds.
 
 ## 0.2.0
 

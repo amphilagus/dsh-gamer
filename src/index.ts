@@ -48,7 +48,7 @@ const TOOL_GUIDANCE =
   + 'Then gamer_catalog (list_games/get_game), '
   + 'gamer_how_to_play (in-match rules, actSchema, queries dictionary), '
   + 'gamer_room (list/enter/join/get/ready/leave/get_match), '
-  + 'gamer_play (view/wait/leave), gamer_act (query then act), and gamer_profile. '
+  + 'gamer_play (view/leave), gamer_act (query then act), and gamer_profile. '
   + 'This DSH session may hold exactly one platform account at a time; token is bound to the session id. Saved accounts are shared through this DSH_HOME, but selections and active tokens are session-local. '
   + 'Account/platform switching asks the old platform to revoke this session and apply its durable game/table departure policy; read failures and do not force a switch. '
   + 'If already logged in, use whoami or logout — a second register/login returns already_logged_in. '
@@ -57,15 +57,15 @@ const TOOL_GUIDANCE =
   + 'Load gamer-play before the first play loop. Only gamer_room enter for listed: true games. Do not create rooms. '
   + 'gamer_room list shows all numbered tables including empty. Sit at a chosen table with enter/join tableNo. One seat per game; gamer_room leave before switching tables. '
   + 'Entering a table only takes a seat; gamer_room ready starts a match when enough players are table-ready. '
-  + 'A ticket means the match is already playing with a role; gamer_play view/wait then gamer_act. Do not POST /v1/ready on the game. '
+  + 'A ticket means the match is already playing with a role; gamer_play view then gamer_act. Do not POST /v1/ready on the game. '
   + 'Hall seats are 1..maxPlayers from the catalog. view.seat is that slot; view.role is the how-to-play identity and appears only when status=playing. '
-  + 'On every gamer_play view/wait, read events first (self last ply + latest non-self ply, relation other), then observation. '
-  + 'If yourTurn is true, gamer_act using current legalActions (may be pass). Several seats may have yourTurn at once; if false, short wait. '
+  + 'On every gamer_play view, read events first (self last ply + latest non-self ply, relation other), then observation. '
+  + 'If yourTurn is true, gamer_act using current legalActions (may be pass). Several seats may have yourTurn at once; if false, finish the current task and stay parked until the background reminder reactivates play. '
   + 'Platform match_started / match_ended arrive as <system-reminder> user messages (per-game record copy). '
   + 'After match_ended you stay at the table: gamer_room ready to play again, gamer_room leave if done. gamer_room leave, gamer_play leave, and account logout all use the platform-coordinated durable departure path so a game may install a replacement. '
   + 'Call gamer_how_to_play for the chosen slug before the first gamer_act; act uses actionJson matching actSchema; query uses a name from queries. '
-  + 'gamer_play view/wait and gamer_act talk to the game with the match ticket; gamer_play leave is the deliberate exception and leaves through the platform. '
-  + 'Always give the human watchUrl (the platform /rooms/{roomId} table page); it is view-only. Do not send the game spectate URL. wait timeoutSeconds is 1–30 (default 8) and only controls player-requested long polling; it is not a game action clock. Poll while yourTurn is false. '
+  + 'gamer_play view and gamer_act talk to the game with the match ticket; gamer_play leave is the deliberate exception and leaves through the platform. '
+  + 'Always give the human watchUrl (the platform /rooms/{roomId} table page); it is view-only. Do not send the game spectate URL. '
   + 'Local bash is allowed; curl/wget/open and http(s) URLs in the shell are blocked — play only via gamer_*. '
   + 'Never paste the match ticket into the reply.'
 
@@ -201,7 +201,7 @@ export function apply(ctx: Context, config: GamerConfig = {}): void {
 
   ctx.skills.register({
     name: SKILL_PLAY,
-    description: 'Play on a DSH Gaming platform: register/login, list games, load how-to-play, gamer_room enter/ready, gamer_play view/wait, gamer_act query then act, rematch at the same table, and give the human watchUrl (platform table page).',
+    description: 'Play on a DSH Gaming platform: register/login, list games, load how-to-play, gamer_room enter/ready, gamer_play view, gamer_act query then act, rematch at the same table, and give the human watchUrl (platform table page).',
     source: 'runtime',
     content: SKILL_PLAY_CONTENT,
   })

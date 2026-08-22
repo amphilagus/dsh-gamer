@@ -15,6 +15,7 @@ import { connectEntrySession } from './entry-session.ts'
 import { leaveCurrentMatchThroughPlatform } from './match-departure.ts'
 import { logoutCurrentSession } from './logout.ts'
 import { fetchNotices, injectNotices, takeFresh, type InjectAgent } from './notices.ts'
+import { MAX_WAIT_TIMEOUT_SECONDS, normalizeWaitTimeoutSeconds } from './polling.ts'
 import { SavedAccountError, type SavedAccountStore, savedAccountId } from './saved-accounts.ts'
 import {
   GamerSessionManager,
@@ -570,7 +571,7 @@ export function registerTools(ctx: Context, services: GamerToolServices): void {
         client.gameSlug = slug
         return asJson({
           ok: true,
-          usage: 'Follow markdown. gamer_act action=act: actionJson matching actSchema. gamer_act action=query: name from queries (argsJson optional). Do not use this document for tables or login.',
+          usage: 'Use markdown for game rules, roles, queries, and action semantics; Gamer system and skill instructions control the session lifecycle. gamer_act action=act: actionJson matching actSchema. gamer_act action=query: name from queries (argsJson optional). When yourTurn is false, finish the current agent task; the background reminder will reactivate play. Do not use this document for tables or login.',
           ...(doc as object),
         })
       } catch (error) {
@@ -682,15 +683,20 @@ export function registerTools(ctx: Context, services: GamerToolServices): void {
 
   ctx.tools.register(defineTool({
     name: 'gamer_play',
-    description: 'In-match loop with the match ticket: view, wait, or leave through the platform so a replacement can continue. Requires this session to be logged in. Not table enter/ready. Not judgment or moves — those are gamer_act. Read events on every view/wait (self last ply plus the latest non-self ply, relation other) before the board. A ticket means status is already playing with a role. watchUrl is the platform table page for the human (view-only). wait is player-requested long polling (1–30s, default 8), not a game countdown. view.seat is the hall slot (1..maxPlayers); view.role is the in-game identity from how-to-play. yourTurn true means follow current legalActions (may be pass/skip); several seats may be true at once.',
+    description: 'Read the current in-match view or leave through the platform so a replacement can continue. Requires this session to be logged in. Not table enter/ready. Not judgment or moves — those are gamer_act. Read events on every view (self last ply plus the latest non-self ply, relation other) before the board. A ticket means status is already playing with a role. watchUrl is the platform table page for the human (view-only). view.seat is the hall slot (1..maxPlayers); view.role is the in-game identity from how-to-play. yourTurn true means follow current legalActions (may be pass/skip); several seats may be true at once.',
     parameters: {
       action: {
         type: 'string',
         required: true,
         enum: ['view', 'wait', 'leave'],
-        description: 'view/wait hit the game. leave exits the platform table, creates a durable departure, and lets the game install a replacement. Ready is gamer_room on the table, not this tool.',
+        description: 'view reads the game. leave exits the platform table, creates a durable departure, and lets the game install a replacement. Ready is gamer_room on the table, not this tool.',
       },
-      timeoutSeconds: { type: 'integer', description: 'wait timeout, 1-30, default 8.' },
+      timeoutSeconds: {
+        type: 'integer',
+        minimum: 1,
+        maximum: MAX_WAIT_TIMEOUT_SECONDS,
+        description: 'Optional compatibility timeout in seconds; default 8.',
+      },
     },
     output: { schema: OUTPUT_SCHEMA, render: renderJson },
     timeoutMs: 35_000,
@@ -711,7 +717,7 @@ export function registerTools(ctx: Context, services: GamerToolServices): void {
         if (args.action === 'wait') {
           const view = await client.game('/v1/wait', {
             method: 'POST',
-            body: JSON.stringify({ timeoutSeconds: args.timeoutSeconds ?? 8 }),
+            body: JSON.stringify({ timeoutSeconds: normalizeWaitTimeoutSeconds(args.timeoutSeconds) }),
           })
           remember(client, view, client.gameSlug)
           return await out(view)
@@ -728,7 +734,7 @@ export function registerTools(ctx: Context, services: GamerToolServices): void {
 
   ctx.tools.register(defineTool({
     name: 'gamer_act',
-    description: 'In-match judgment and decision. Requires this session to be logged in. action=query is a named how-to-play query (no turn, no board change). action=act submits actionJson as POST /v1/act when yourTurn is true — send an object from the current legalActions (may be pass/skip, not a placement). Several seats may have yourTurn at once. Load gamer_how_to_play first. Do not invent query names. Do not use this for view/wait/table.',
+    description: 'In-match judgment and decision. Requires this session to be logged in. action=query is a named how-to-play query (no turn, no board change). action=act submits actionJson as POST /v1/act when yourTurn is true — send an object from the current legalActions (may be pass/skip, not a placement). Several seats may have yourTurn at once. Load gamer_how_to_play first. Do not invent query names. Do not use this for view or table operations.',
     parameters: {
       action: {
         type: 'string',
